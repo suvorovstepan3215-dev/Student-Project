@@ -63,6 +63,14 @@
       "size": [220, 78]
     },
     {
+      "id": "habrAgent",
+      "type": "backend",
+      "label": "Агент Habr",
+      "sublabel": "pubDate из RSS",
+      "pos": [80, 600],
+      "size": [220, 78]
+    },
+    {
       "id": "validator",
       "type": "backend",
       "label": "Валидатор",
@@ -83,7 +91,7 @@
     {
       "kind": "region",
       "label": "Локальные агенты",
-      "wraps": ["panel", "orchestrator", "notifier", "archiveAgent", "scraper", "arxivAgent", "openalexAgent", "validator", "summarizer"]
+      "wraps": ["panel", "orchestrator", "notifier", "archiveAgent", "scraper", "arxivAgent", "openalexAgent", "habrAgent", "validator", "summarizer"]
     }
   ],
   "connections": [
@@ -98,6 +106,8 @@
     { "id": "arxiv-items", "from": "arxivAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
     { "id": "search-openalex", "from": "scraper", "to": "openalexAgent", "label": "fetch", "labelDy": 22 },
     { "id": "openalex-items", "from": "openalexAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
+    { "id": "search-habr", "from": "scraper", "to": "habrAgent", "label": "fetch", "labelDy": 22 },
+    { "id": "habr-items", "from": "habrAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
     { "id": "search-check", "from": "scraper", "to": "validator", "label": "запись", "variant": "emphasis", "labelDx": -48, "labelDy": 28 },
     { "id": "check-answer", "from": "validator", "to": "scraper", "label": "да или нет", "labelDx": 58 },
     { "id": "orch-text", "from": "orchestrator", "to": "summarizer", "label": "текст", "labelDy": -22 },
