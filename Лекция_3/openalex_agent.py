@@ -55,7 +55,7 @@ SELECT_FIELDS = ",".join(
     ]
 )
 
-USER_AGENT = "multi-agent-publication-tracker/1.0 (учебный проект; курс MAS)"
+USER_AGENT = "multi-agent-publication-tracker/1.0 (MAS course project)"
 
 # Символы, которые ломают синтаксис фильтра OpenAlex: запятая разделяет
 # фильтры, двоеточие отделяет имя фильтра от значения, «|» означает OR,
