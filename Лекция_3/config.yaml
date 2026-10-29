@@ -5,11 +5,12 @@
 topics:
   - "medical multi-agent"
 
-# Подключённые источники поиска (по умолчанию). Доступно: archive, arxiv, openalex
+# Подключённые источники поиска (по умолчанию). Доступно: archive, arxiv, openalex, habr
 sources:
   - "archive"
   - "arxiv"
   - "openalex"
+  - "habr"
 
 # OpenAlex: письмо для «вежливого» пула и ключ API. Оба поля необязательны —
 # без них запросы идут в общий бесплатный дневной лимит на IP-адрес.

@@ -314,7 +314,7 @@ def fetch(
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    # Логгер настраивать не нужно: это делает utils.py, иначе строки дублируются.
     for record in fetch(load_config().get("topics") or ["medical multi-agent"], rows=5):
         print(record["identifier"], "|", record["published"], "|", record["title"][:80])
         print("   ", record["url"])
