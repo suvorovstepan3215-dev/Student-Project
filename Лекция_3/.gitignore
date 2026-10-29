@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.py[cod]
+main.log
+history.json
+diagr/agents.visual-check.*
+.DS_Store

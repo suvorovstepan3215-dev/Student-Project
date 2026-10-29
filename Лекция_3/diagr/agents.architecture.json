@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Агенты трекера публикаций",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "panel",
+      "type": "frontend",
+      "label": "Панель",
+      "sublabel": "streamlit_app.py",
+      "pos": [80, 72],
+      "size": [220, 78]
+    },
+    {
+      "id": "orchestrator",
+      "type": "backend",
+      "label": "Оркестратор",
+      "sublabel": "main.process_items",
+      "pos": [420, 72],
+      "size": [220, 78]
+    },
+    {
+      "id": "notifier",
+      "type": "backend",
+      "label": "Нотификатор",
+      "sublabel": "SMTP, сейчас выкл",
+      "pos": [760, 424],
+      "size": [220, 78]
+    },
+    {
+      "id": "archiveAgent",
+      "type": "backend",
+      "label": "Агент archive.org",
+      "sublabel": "publicdate",
+      "pos": [80, 248],
+      "size": [220, 78]
+    },
+    {
+      "id": "scraper",
+      "type": "backend",
+      "label": "Скрапер",
+      "sublabel": "координатор источников",
+      "pos": [420, 248],
+      "size": [220, 78]
+    },
+    {
+      "id": "arxivAgent",
+      "type": "backend",
+      "label": "Агент arXiv",
+      "sublabel": "submittedDate",
+      "pos": [760, 248],
+      "size": [220, 78]
+    },
+    {
+      "id": "openalexAgent",
+      "type": "backend",
+      "label": "Агент OpenAlex",
+      "sublabel": "publication_date",
+      "pos": [80, 424],
+      "size": [220, 78]
+    },
+    {
+      "id": "validator",
+      "type": "backend",
+      "label": "Валидатор",
+      "sublabel": "все слова темы",
+      "pos": [420, 424],
+      "size": [220, 78]
+    },
+    {
+      "id": "summarizer",
+      "type": "backend",
+      "label": "Суммаризатор",
+      "sublabel": "sumy LSA",
+      "pos": [760, 72],
+      "size": [220, 78]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Локальные агенты",
+      "wraps": ["panel", "orchestrator", "notifier", "archiveAgent", "scraper", "arxivAgent", "openalexAgent", "validator", "summarizer"]
+    }
+  ],
+  "connections": [
+    { "id": "panel-run", "from": "panel", "to": "orchestrator", "label": "запуск", "variant": "emphasis", "labelDy": 22 },
+    { "id": "orch-result", "from": "orchestrator", "to": "panel", "label": "результат", "labelDy": -22 },
+    { "id": "orch-mail", "from": "orchestrator", "to": "notifier", "label": "почта выкл", "variant": "dashed", "fromSide": "top", "toSide": "right", "via": [[530, 36], [1048, 36], [1048, 463]], "labelAt": [1112, 250] },
+    { "id": "orch-search", "from": "orchestrator", "to": "scraper", "label": "темы и даты", "variant": "emphasis", "labelDx": -46, "labelDy": 28 },
+    { "id": "search-accepted", "from": "scraper", "to": "orchestrator", "label": "принятые", "labelDx": 42 },
+    { "id": "search-archive", "from": "scraper", "to": "archiveAgent", "label": "fetch", "labelDy": 22 },
+    { "id": "archive-items", "from": "archiveAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
+    { "id": "search-arxiv", "from": "scraper", "to": "arxivAgent", "label": "fetch", "labelDy": 22 },
+    { "id": "arxiv-items", "from": "arxivAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
+    { "id": "search-openalex", "from": "scraper", "to": "openalexAgent", "label": "fetch", "labelDy": 22 },
+    { "id": "openalex-items", "from": "openalexAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
+    { "id": "search-check", "from": "scraper", "to": "validator", "label": "запись", "variant": "emphasis", "labelDx": -48, "labelDy": 28 },
+    { "id": "check-answer", "from": "validator", "to": "scraper", "label": "да или нет", "labelDx": 58 },
+    { "id": "orch-text", "from": "orchestrator", "to": "summarizer", "label": "текст", "labelDy": -22 },
+    { "id": "summary-back", "from": "summarizer", "to": "orchestrator", "label": "резюме", "labelDy": 22 }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Запуск",
+      "items": [
+        "Панель передаёт темы, источники и диапазон дат",
+        "Оркестратор проводит один цикл обработки"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Поиск",
+      "items": [
+        "Скрапер вызывает fetch и получает записи назад",
+        "В записи есть название, ссылка и аннотация"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Проверка и резюме",
+      "items": [
+        "Валидатор отвечает скраперу: тема есть или нет",
+        "Резюме возвращается оркестратору и затем на панель"
+      ]
+    }
+  ]
+}

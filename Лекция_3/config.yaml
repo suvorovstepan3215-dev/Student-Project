@@ -1,0 +1,53 @@
+# config.yaml
+# Configuration for the Multi‑Agent Publication Tracker
+
+# List of keywords or topics to monitor on archiv.org
+topics:
+  - "medical multi-agent"
+
+# Подключённые источники поиска (по умолчанию). Доступно: archive, arxiv, openalex
+sources:
+  - "archive"
+  - "arxiv"
+  - "openalex"
+
+# OpenAlex: письмо для «вежливого» пула и ключ API. Оба поля необязательны —
+# без них запросы идут в общий бесплатный дневной лимит на IP-адрес.
+# Секреты лучше держать в окружении: OPENALEX_MAILTO и OPENALEX_API_KEY.
+openalex:
+  mailto: ""
+  api_key: ""
+
+# Чем строить резюме: sumy, ollama или openai.
+summarizer: sumy
+llm:
+  base_url: http://localhost:11434/v1
+  model: qwen2.5:7b
+providers:
+  ollama:
+    base_url: http://localhost:11434/v1
+    model: qwen2.5:7b
+  openai:
+    base_url: https://api.openai.com/v1
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+
+# How often to check for new publications (in seconds)
+check_interval_seconds: 3600  # every hour
+
+# Отправлять ли резюме на почту. Пока идёт проверка – выключено (false):
+# результаты только показываются в интерфейсе Streamlit / в логах.
+send_email: false
+
+# Email settings for sending summaries
+email:
+  smtp_server: "smtp.gmail.com"
+  smtp_port: 587
+  username: "your.email@example.com"
+  # For security, use an app‑specific password or environment variable
+  password: "YOUR_EMAIL_PASSWORD"
+  from_address: "your.email@example.com"
+  to_address: "recipient@example.com"
+
+# Optional: maximum number of items to keep in history to avoid repeats
+history_size: 1000
