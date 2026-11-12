@@ -26,6 +26,7 @@ import mcp_service  # noqa: E402
 import minzdrav_agent  # noqa: E402
 import openalex_agent  # noqa: E402
 import scraper  # noqa: E402
+import summarizer  # noqa: E402
 import validator  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="agents-offline-"))
@@ -315,6 +316,18 @@ check("OpenAlex с аннотацией — страница не скачива
       validator.validate_item(dict(record, source="openalex"), ["medical multi-agent"]) is True
       and downloads == [])
 
+print("\n6.1 Валидатор на карточке Минздрава (русская тема)")
+downloads.clear()
+_mz_entry = {"slug": "sakharnyy-diabet", "title": "Сахарный диабет", "codes": "E10, E11",
+             "age": "Взрослые, дети", "year": 2024,
+             "url": "https://minzdrav.clinirec.ru/kr/sakharnyy-diabet/"}
+_mz_item = dict(minzdrav_agent._to_item(_mz_entry), source="minzdrav")
+check("Минздрав с темой в аннотации — страница не качается",
+      validator.validate_item(_mz_item, ["сахарный диабет"]) is True and downloads == [], str(downloads))
+downloads.clear()
+check("Минздрав без темы — отклонено без скачивания страницы",
+      validator.validate_item(_mz_item, ["онкология"]) is False and downloads == [], str(downloads))
+
 print("\n7. Скрапер: Habr в общем цикле")
 module, calls = fake_requests([FakeResponse(HABR_RSS.encode("utf-8"))])
 habr_agent.requests = module
@@ -363,6 +376,11 @@ try:
     check("окно 2025–2026 включает аскаридоз (пересмотр 2025)", ask and ask[0]["identifier"] == "minzdrav:askaridoz", str([i["identifier"] for i in ask]))
     empty = minzdrav_agent.fetch(["  ", ""], rows=10, date_from=date(2015, 1, 1), date_to=date(2026, 12, 31))
     check("пустые темы — без результата", empty == [])
+    # Новое поведение: годовой фильтр только при пересечении границы лет.
+    narrow = minzdrav_agent.fetch(["астма"], rows=10, date_from=date(2024, 1, 1), date_to=date(2024, 12, 31))
+    check("узкое окно в один год не отсекает КР этого года", narrow and narrow[0]["identifier"] == "minzdrav:bronhialnaya-astma", str([i["identifier"] for i in narrow]))
+    week = minzdrav_agent.fetch(["астма"], rows=10, date_from=date(2026, 11, 5), date_to=date(2026, 11, 12))
+    check("пресет «неделя» (один год) не делает выдачу пустой", week and week[0]["identifier"] == "minzdrav:bronhialnaya-astma", str([i["identifier"] for i in week]))
 finally:
     minzdrav_agent._http_get = _real_get
 
@@ -462,6 +480,23 @@ try:
     check("summarize_text: пустой текст — ошибка", False, "исключение не брошено")
 except ValueError:
     check("summarize_text: пустой текст — ошибка", True)
+
+print("\n10.1 Суммаризатор: кириллица и латиница")
+# Кириллица резюмируется первыми предложениями — без Sumy и без данных NLTK.
+_ru = summarizer.summarize(
+    "Сахарный диабет — хроническое заболевание эндокринной системы. "
+    "Требует постоянного контроля уровня глюкозы. Рекомендуются диета и физическая активность.",
+    max_sentences=2,
+)
+check("кириллица резюмируется первыми предложениями", "Сахарный диабет" in _ru and "Требует постоянного" in _ru, _ru[:80])
+check("_has_cyrillic распознаёт кириллицу", summarizer._has_cyrillic("Привет мир") and not summarizer._has_cyrillic("Hello world"))
+# Латиница идёт через LSA; если данных NLTK нет, срабатывает fallback первыми предложениями.
+_en = summarizer.summarize(
+    "Medical multi-agent systems coordinate several specialized agents. "
+    "Together they improve clinical scheduling workflows. Evaluation shows gains.",
+    max_sentences=1,
+)
+check("латиница резюмируется (LSA или fallback, не пусто)", bool(_en), _en[:80])
 
 print("\n11. MCP: регистрация tools на сервере")
 try:

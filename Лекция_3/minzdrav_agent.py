@@ -243,8 +243,11 @@ def fetch(
     """Получить КР Минздрава по темам и диапазону лет пересмотра.
 
     Строит каталог КР (страницы классов МКБ-10), оставляет записи, где все
-    слова темы встречаются в названии, кодах МКБ-10 или возрасте, и отбрасывает
-    те, чей год пересмотра не попадает в [date_from.year, date_to.year].
+    слова темы встречаются в названии, кодах МКБ-10 или возрасте. Фильтр по
+    году пересмотра включается только когда запрошенный диапазон охватывает
+    несколько лет (пользователь выбрал «Произвольный» на широкий период):
+    рубрикатор — справочник с точностью до года, и при узком окне «неделя»/
+    «месяц» жёсткий отсев по году сделал бы демо по умолчанию пустым.
     Записи возвращаются по убыванию года пересмотра, не больше ``rows`` штук.
     """
     date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
@@ -257,6 +260,9 @@ def fetch(
         logger.warning("Каталог Минздрава пуст – поиск не выполняется.")
         return []
 
+    # Годовой фильтр только при пересечении границы лет (широкий диапазон).
+    cross_year = date_to.year > date_from.year
+
     by_year = sorted(
         catalog.values(),
         key=lambda e: (e["year"] or 0),
@@ -265,7 +271,7 @@ def fetch(
     matched: List[Dict] = []
     for entry in by_year:
         year = entry["year"]
-        if year is not None and (year < date_from.year or year > date_to.year):
+        if cross_year and year is not None and (year < date_from.year or year > date_to.year):
             continue
         searchable = f"{entry['title']} {entry['codes']} {entry['age']}"
         if any(_topic_matches(searchable, topic) for topic in wanted):

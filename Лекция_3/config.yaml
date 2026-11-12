@@ -2,8 +2,13 @@
 # Configuration for the Multi‑Agent Publication Tracker
 
 # List of keywords or topics to monitor on archiv.org
+# Темы общие для всех источников: английская фраза — для научных баз
+# (Europe PMC, arXiv, OpenAlex, Habr, archive.org), русская — для Рубрикатора
+# КР Минздрава (каталог ищется по названию заболевания или коду МКБ-10).
+# Запись проходит, если любая из тем нашлась в тексте.
 topics:
   - "medical multi-agent"
+  - "сахарный диабет"
 
 # Подключённые источники поиска (по умолчанию). Доступно: archive, arxiv, openalex, habr, europepmc
 sources:

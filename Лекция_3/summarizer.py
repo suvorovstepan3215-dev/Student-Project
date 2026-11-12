@@ -1,13 +1,19 @@
 # summarizer.py
 """Агент-суммаризатор.
 
-``engine="sumy"`` строит резюме алгоритмом LSA из библиотеки Sumy.
+``engine="sumy"`` строит резюме алгоритмом LSA из библиотеки Sumy (латиница).
 ``engine="ollama"`` / ``engine="openai"`` запрашивают модель через
 OpenAI-совместимый endpoint из секций ``providers`` / ``llm`` в config.yaml.
+
+Для кириллицы (например, карточки Рубрикатора КР Минздрава) Sumy не
+подходит — у него нет русского токенизатора, — поэтому такой текст
+резюмируется первыми предложениями. Этот же вариант используется как
+запасной, если LSA или ответ модели недоступны.
 """
 
 import logging
 import os
+import re
 
 import requests
 
@@ -99,6 +105,34 @@ def _get_summarizer() -> LsaSummarizer:
     return summarizer
 
 
+# Sumy поставляется только с латинскими токенизаторами (english, french, …),
+# русского нет. Поэтому кириллицу резюмируем просто: первые предложения.
+_CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
+
+
+def _has_cyrillic(text: str) -> bool:
+    """В тексте есть хотя бы один кириллический символ."""
+    return bool(_CYRILLIC_RE.search(text or ""))
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Разбить текст на предложения по точке/восклицательному/вопросительному
+    знаку и переносу строки. Простой, но достаточный для кириллицы вариант."""
+    parts = re.split(r"(?<=[.!?])\s+|\n+", (text or "").strip())
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _summarize_first_sentences(text: str, max_sentences: int) -> str:
+    """Резюме для кириллицы и как запасной вариант: первые предложения текста."""
+    sentences = _split_sentences(text)
+    if not sentences:
+        return (text or "").strip()[:500]
+    limit = max(1, int(max_sentences))
+    summary = " ".join(sentences[:limit])
+    logger.info("Резюме построено первыми предложениями (%d из %d).", limit, len(sentences))
+    return summary
+
+
 def _summarize_lsa(text: str, max_sentences: int) -> str:
     """Построить резюме алгоритмом LSA (английский токенизатор)."""
     parser = PlaintextParser.from_string(text, Tokenizer("english"))
@@ -106,6 +140,22 @@ def _summarize_lsa(text: str, max_sentences: int) -> str:
     summary = " ".join(str(sentence) for sentence in summary_sentences)
     logger.info("Резюме построено алгоритмом LSA (%d предложений).", max_sentences)
     return summary
+
+
+def _fallback_summary(text: str, max_sentences: int) -> str:
+    """Резюме, не требующее внешних моделей: первые предложения.
+
+    Для кириллицы — единственный рабочий вариант (Sumy без русского
+    токенизатора). Для латиницы используем LSA, а если он по какой-то
+    причине не сработал — тоже первые предложения.
+    """
+    if _has_cyrillic(text):
+        return _summarize_first_sentences(text, max_sentences)
+    try:
+        return _summarize_lsa(text, max_sentences)
+    except Exception as exc:  # Sumy может упасть на коротком/странном тексте
+        logger.warning("Sumy LSA не сработал (%s); используются первые предложения.", exc)
+        return _summarize_first_sentences(text, max_sentences)
 
 
 def _summarize_llm(text: str, max_sentences: int, llm: dict) -> str:
@@ -188,22 +238,29 @@ def summarize(
             if resp is not None and resp.text:
                 detail = f": {resp.text[:300]}"
             logger.warning(
-                "Не удалось получить резюме от %s (%s%s). Используется Sumy.",
+                "Не удалось получить резюме от %s (%s%s). Используется запасной вариант.",
                 llm.get("model"),
                 exc,
                 detail,
             )
-            return _summarize_lsa(text, max_sentences)
+            return _fallback_summary(text, max_sentences)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             logger.warning(
-                "Ответ модели %s не разобран (%s). Используется Sumy.",
+                "Ответ модели %s не разобран (%s). Используется запасной вариант.",
                 llm.get("model"),
                 exc,
             )
-            return _summarize_lsa(text, max_sentences)
+            return _fallback_summary(text, max_sentences)
         if summary:
             return summary
-        logger.warning("Модель %s вернула пустое резюме. Используется Sumy.", llm.get("model"))
-        return _summarize_lsa(text, max_sentences)
+        logger.warning("Модель %s вернула пустое резюме. Используется запасной вариант.", llm.get("model"))
+        return _fallback_summary(text, max_sentences)
 
-    return _summarize_lsa(text, max_sentences)
+    # Движок sumy: кириллицу резюмируем первыми предложениями, латиницу — LSA.
+    if _has_cyrillic(text):
+        return _summarize_first_sentences(text, max_sentences)
+    try:
+        return _summarize_lsa(text, max_sentences)
+    except Exception as exc:
+        logger.warning("Sumy LSA не сработал (%s); используются первые предложения.", exc)
+        return _summarize_first_sentences(text, max_sentences)
