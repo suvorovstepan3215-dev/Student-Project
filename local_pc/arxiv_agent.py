@@ -143,7 +143,7 @@ def _search(query: str, limit: int, sort_by: str) -> List[Dict]:
                 total = int(raw_total)
             except ValueError:
                 total = 0
-            logger.info(f"📥 arXiv ({sort_by}): всего совпадений {total}")
+            logger.info(f"arXiv ({sort_by}): всего совпадений {total}")
         batch = _parse_entries(root)
         if not batch:
             break
@@ -228,7 +228,7 @@ def fetch(
         logger.warning("Темы для arXiv пустые – поиск не выполняется.")
         return []
     query = build_query(topics, date_from, date_to)
-    logger.info(f"🌐 Запрос к arXiv: {query} (до {rows} препринтов)")
+    logger.info(f"Запрос к arXiv: {query} (до {rows} препринтов)")
     by_id: Dict[str, Dict] = {}
     for item in _search(query, rows, "submittedDate"):
         by_id[item["identifier"]] = item
@@ -251,8 +251,8 @@ def fetch(
         reverse=True,
     )
     if len(items) > rows:
-        logger.info(f"📥 arXiv: в диапазоне {len(items)}, отдано последних {rows}")
+        logger.info(f"arXiv: в диапазоне {len(items)}, отдано последних {rows}")
         items = items[:rows]
     else:
-        logger.info(f"📥 arXiv: отдано {len(items)}")
+        logger.info(f"arXiv: отдано {len(items)}")
     return SearchResults(items, warnings=notices)

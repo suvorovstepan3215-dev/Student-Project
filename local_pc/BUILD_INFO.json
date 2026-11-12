@@ -1,6 +1,6 @@
 {
   "profile": "local_pc",
   "canonical_source": "Лекция_3 (maintained repository copy)",
-  "payload_sha256": "6b6abf77d1144b3c4b96183052e52b1a8a526f3df8b6616639937b6a4cdc3125",
+  "payload_sha256": "7a04167cf1b54f9178c26200fb712f87702c4fca39fda47f9f36539c59599bdd",
   "regenerate": "python tools/build_variants.py"
 }

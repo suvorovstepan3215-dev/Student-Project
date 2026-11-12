@@ -78,7 +78,9 @@ def payloads() -> dict[str, dict[str, bytes]]:
         files[".gitignore"] = IGNORE.encode("utf-8")
         if profile == "streamlit_web":
             files[".streamlit/config.toml"] = (
-                b'[server]\nheadless = true\naddress = "0.0.0.0"\n\n[browser]\ngatherUsageStats = false\n'
+                b'[server]\nheadless = true\naddress = "0.0.0.0"\n\n[browser]\ngatherUsageStats = false\n\n'
+                b'[theme]\nprimaryColor = "#8A6D4B"\nbackgroundColor = "#FAF7F0"\n'
+                b'secondaryBackgroundColor = "#F2EEE3"\ntextColor = "#3F3A33"\nfont = "sans serif"\n'
             )
         digest = hashlib.sha256()
         for name, content in sorted(files.items()):

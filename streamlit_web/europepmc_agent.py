@@ -194,7 +194,7 @@ def _api_get(params: Dict) -> Dict:
         )
         if resp.status_code == 429 or resp.status_code >= 500:
             wait = 2.0 * (attempt + 1)
-            logger.warning(f"⚠️ Europe PMC: HTTP {resp.status_code} – повтор через {wait:.0f} с")
+            logger.warning(f"Europe PMC: HTTP {resp.status_code} – повтор через {wait:.0f} с")
             if attempt == 2:
                 break
             time.sleep(wait)
