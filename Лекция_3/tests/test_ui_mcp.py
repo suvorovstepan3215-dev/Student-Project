@@ -62,7 +62,7 @@ def test_real_stdio_discovery_and_russian_summary(monkeypatch, tmp_path):
 def test_ui_default_has_no_secret_endpoint_controls_or_shared_file_actions():
     app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
     assert not app.exception
-    assert app.multiselect[0].value == ["europepmc", "minzdrav"]
+    assert app.multiselect[0].value == ["europepmc", "openalex", "minzdrav"]
     assert len(app.multiselect[0].options) == 6
     assert not app.text_input  # No endpoint, env-variable name or API-key form.
     labels = {button.label for button in app.button}

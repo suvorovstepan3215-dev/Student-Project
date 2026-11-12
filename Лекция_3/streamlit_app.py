@@ -134,7 +134,9 @@ with st.sidebar:
     sources = st.multiselect(
         "Подключённые источники",
         options=source_ids,
-        default=[sid for sid in cfg.get("sources", ["europepmc", "minzdrav"]) if sid in SOURCE_NAMES],
+        default=[
+            sid for sid in cfg.get("sources", ["europepmc", "openalex", "minzdrav"]) if sid in SOURCE_NAMES
+        ],
         format_func=lambda sid: SOURCE_NAMES[sid],
     )
     period = st.selectbox(

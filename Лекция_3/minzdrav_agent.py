@@ -60,6 +60,7 @@ MAX_CATALOG_SECONDS = 90
 MAX_MIRROR_PAGES = 80
 MAX_OFFICIAL_PAGES = 20
 OFFICIAL_PAGE_SIZE = 200
+MAX_ALIAS_LENGTH = 200
 _YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 _CODE_RE = re.compile(r"[A-Z]\d{2}(?:\.[A-Z0-9]{1,4})?(?:\s*[-–]\s*[A-Z]?\d{2}(?:\.[A-Z0-9]{1,4})?)?")
 _CATALOG_CACHE = {}
@@ -75,6 +76,38 @@ class Catalog(dict):
         self.backend = backend
 
 
+def _parse_topic_aliases(raw) -> dict:
+    """Опциональное расширение лексического поиска карточек КР.
+
+    Словарь «тема: [алиасы]» из конфигурации сервера: алиасы — слова и
+    коды МКБ-10 (например, ``"E10"``), которые могут встречаться в
+    заголовке/кодах карточки, но отсутствуют в самой теме. Поиск по КР
+    всё равно остаётся лексическим — это не клинический фактчекинг.
+    Ключи словаря сравниваются по casefold.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("minzdrav.topic_aliases должен быть словарём «тема: [алиасы]».")
+    aliases: dict[str, list[str]] = {}
+    for topic, values in raw.items():
+        if not isinstance(topic, str) or not topic.strip():
+            raise ValueError("Ключи minzdrav.topic_aliases должны быть непустыми строками.")
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"minzdrav.topic_aliases[{topic!r}]: нужен непустой список алиасов.")
+        cleaned: list[str] = []
+        for value in values:
+            if not isinstance(value, str):
+                raise ValueError(f"minzdrav.topic_aliases[{topic!r}]: алиасы должны быть строками.")
+            alias = value.strip()
+            if not alias or len(alias) > MAX_ALIAS_LENGTH or any(ord(ch) < 32 for ch in alias):
+                raise ValueError(f"minzdrav.topic_aliases[{topic!r}]: недопустимый алиас {value!r}.")
+            if alias not in cleaned:
+                cleaned.append(alias)
+        aliases[topic.strip().casefold()] = cleaned
+    return aliases
+
+
 def _settings() -> dict:
     cfg = load_config().get("minzdrav") or {}
     mode = cfg.get("mode", "auto")
@@ -84,7 +117,27 @@ def _settings() -> dict:
     base = normalize_url(str(cfg.get("base_url") or DEFAULT_BASE_URL)).rstrip("/")
     if urlsplit(base).query or urlsplit(base).path:
         raise ValueError("minzdrav.base_url должен содержать только схему и имя узла.")
-    return {"mode": mode, "base_url": base, "ttl": ttl}
+    return {
+        "mode": mode,
+        "base_url": base,
+        "ttl": ttl,
+        "topic_aliases": _parse_topic_aliases(cfg.get("topic_aliases")),
+    }
+
+
+def _expand_topics(topics: list[str], aliases: dict) -> tuple[list[str], list[str]]:
+    """Темы + их алиасы (без дублей, порядок сохранён). Возвращает (все, применённые)."""
+    expanded = list(topics)
+    applied: list[str] = []
+    seen = {topic.casefold() for topic in expanded}
+    for topic in topics:
+        for alias in aliases.get(topic.casefold(), []):
+            if alias.casefold() in seen:
+                continue
+            seen.add(alias.casefold())
+            expanded.append(alias)
+            applied.append(alias)
+    return expanded, applied
 
 
 def _base_url() -> str:
@@ -454,8 +507,19 @@ def fetch(
     topics = clean_topics(topics)
     bounded_int(rows, "rows", 1, 100)
     start, end = resolve_date_range(date_from=date_from, date_to=date_to)
+    search_topics, applied_aliases = _expand_topics(topics, _settings().get("topic_aliases") or {})
     catalog = get_catalog()
     result = SearchResults(errors=getattr(catalog, "errors", []), warnings=getattr(catalog, "warnings", []))
+    if applied_aliases:
+        result.warnings.append(
+            diagnostic(
+                SOURCE_ID,
+                "topic_aliases",
+                "К поиску по КР применены алиасы тем (слова/коды МКБ-10): "
+                + ", ".join(applied_aliases)
+                + ".",
+            )
+        )
     if getattr(catalog, "backend", "mirror") == "mirror":
         result.warnings.append(
             diagnostic(
@@ -475,7 +539,7 @@ def fetch(
     for entry in catalog.values():
         if not any(
             _topic_matches(f"{entry['title']} {entry.get('codes', '')} {entry.get('age', '')}", topic)
-            for topic in topics
+            for topic in search_topics
         ):
             continue
         if entry.get("backend") == "official_api":

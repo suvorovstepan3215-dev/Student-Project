@@ -10,7 +10,8 @@ from mcp_client import call_tool_sync
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", choices=("europepmc", "minzdrav", "both"), default="europepmc")
+    parser.add_argument("--source", choices=("europepmc", "openalex", "minzdrav", "both"), default="europepmc",
+                        help="both = источники по умолчанию (europepmc + openalex + minzdrav)")
     parser.add_argument("--topic", action="append", help="Repeat for multiple topics")
     parser.add_argument("--rows", type=int, default=3)
     parser.add_argument("--date-from", default="2020-01-01")
@@ -22,7 +23,7 @@ def main(argv=None) -> int:
     tool = "search_" + args.source
     if args.source == "both":
         tool = "search_publications"
-        arguments["sources"] = ["europepmc", "minzdrav"]
+        arguments["sources"] = ["europepmc", "openalex", "minzdrav"]
     try:
         result = call_tool_sync(tool, arguments)
     except Exception as exc:

@@ -1,11 +1,14 @@
 # Server-owned settings. The public web interface cannot write this file.
+# Темы по умолчанию: английская для Europe PMC и OpenAlex, русская для каталога КР.
 topics:
   - "diabetes"
   - "сахарный диабет"
 
-# The two selected coursework sources. Other adapters remain available in UI/MCP.
+# Три источника по умолчанию: литература (Europe PMC + OpenAlex) и каталог КР.
+# Остальные адаптеры доступны в интерфейсе и MCP.
 sources:
   - "europepmc"
+  - "openalex"
   - "minzdrav"
 
 openalex:
@@ -20,6 +23,11 @@ minzdrav:
   mode: auto
   base_url: "https://minzdrav.clinirec.ru"
   cache_ttl_seconds: 900
+  # Алиасы расширяют лексический поиск карточек КР: слова и коды МКБ-10,
+  # которых может не быть в заголовке темы (ловит «СД 2 типа» по коду E11).
+  # Лексическое совпадение не проверяет клиническую релевантность.
+  topic_aliases:
+    "сахарный диабет": ["диабет", "E10", "E11", "E12", "E13", "E14"]
 
 summarizer: sumy
 providers:
