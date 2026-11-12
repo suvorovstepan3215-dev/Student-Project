@@ -18,6 +18,11 @@ openalex:
   api_key: ""  # Лучше через OPENALEX_API_KEY, не храните ключ в файле.
 europepmc:
   email: ""    # Необязательно; можно задать EUROPEPMC_EMAIL.
+  # ЭКСПЕРИМЕНТ, по умолчанию выключено. Если у open-access записи пустая
+  # аннотация, догрузить <abstract> из открытого полного текста (fullTextXML,
+  # JATS). Включить: fulltext_abstract_fallback: true или EUROPEPMC_FULLTEXT_FALLBACK=1.
+  # Догруженная аннотация помечается abstract_origin=fulltext_xml.
+  fulltext_abstract_fallback: false
 
 minzdrav:
   # auto: сначала официальный API, при сбое — зеркало с видимым предупреждением.
