@@ -118,6 +118,11 @@ sh start.sh --server.port 8502
 
 ## 5. Публикация в Streamlit Community Cloud (бесплатный хостинг)
 
+Живой экземпляр этого проекта:
+<https://student-project-2wktq7xzzanagqibs3q5jw.streamlit.app/>
+(health-check проверен 12.11.2026; если приложение показывает старые вкладки,
+сделайте Manage app → Reboot после мержа в `main`).
+
 Важно: Streamlit Cloud собирает приложение **из GitHub-репозитория**, а не из
 ZIP на компьютере. Загрузите папку `streamlit_web` в свой репозиторий
 (например, отдельным репозиторием, где `streamlit_app.py` и
