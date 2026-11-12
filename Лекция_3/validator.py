@@ -15,7 +15,7 @@ logger = logging.getLogger("archiv_tracker.validator")
 
 # Источники, которые отдают полную аннотацию вместе с метаданными:
 # если аннотация есть, страницу публикации можно не скачивать.
-SOURCES_WITH_ABSTRACT = {"arxiv", "openalex"}
+SOURCES_WITH_ABSTRACT = {"arxiv", "openalex", "europepmc"}
 
 
 def _token_in_text(token: str, text: str) -> bool:
@@ -71,7 +71,7 @@ def validate_item(item: Dict, topics: List[str]) -> bool:
         logger.info(f"✅ {ident}: тема «{topic}» найдена в заголовке или аннотации")
         return True
 
-    # 2. arXiv и OpenAlex отдают аннотацию в метаданных – страницу не загружаем.
+    # 2. arXiv, OpenAlex и Europe PMC отдают аннотацию в метаданных – страницу не загружаем.
     #    Если аннотации в источнике нет, пробуем текст страницы (шаг 3).
     if item.get("source") in SOURCES_WITH_ABSTRACT and abstract:
         logger.info(f"❌ {ident}: темы нет ни в заголовке, ни в аннотации – отклонено")

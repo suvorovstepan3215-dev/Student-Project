@@ -5,12 +5,13 @@
 topics:
   - "medical multi-agent"
 
-# Подключённые источники поиска (по умолчанию). Доступно: archive, arxiv, openalex, habr
+# Подключённые источники поиска (по умолчанию). Доступно: archive, arxiv, openalex, habr, europepmc
 sources:
   - "archive"
   - "arxiv"
   - "openalex"
   - "habr"
+  - "europepmc"
 
 # OpenAlex: письмо для «вежливого» пула и ключ API. Оба поля необязательны —
 # без них запросы идут в общий бесплатный дневной лимит на IP-адрес.
@@ -18,6 +19,11 @@ sources:
 openalex:
   mailto: ""
   api_key: ""
+
+# Europe PMC: письмо для «вежливого» пула. Необязательно — без него запросы
+# идут в общий бесплатный лимит на IP-адрес. Можно задать окружением EUROPEPMC_EMAIL.
+europepmc:
+  email: ""
 
 # Чем строить резюме: sumy, ollama или openai.
 summarizer: sumy
