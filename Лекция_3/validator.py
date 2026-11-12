@@ -15,7 +15,9 @@ logger = logging.getLogger("archiv_tracker.validator")
 
 # Источники, которые отдают полную аннотацию вместе с метаданными:
 # если аннотация есть, страницу публикации можно не скачивать.
-SOURCES_WITH_ABSTRACT = {"arxiv", "openalex", "europepmc"}
+# minzdrav — каталог: аннотация синтезируется из названия, кодов МКБ-10 и
+# возраста прямо в агенте, поэтому страницу карточки тоже не качаем.
+SOURCES_WITH_ABSTRACT = {"arxiv", "openalex", "europepmc", "minzdrav"}
 
 
 def _token_in_text(token: str, text: str) -> bool:

@@ -14,7 +14,7 @@ Tools:
 - ``list_sources`` — каталог источников (id, название, описание).
 - ``search_publications`` — проверенный поиск по нескольким источникам.
 - ``search_archive`` / ``search_arxiv`` / ``search_openalex`` / ``search_habr`` /
-  ``search_europepmc`` — сырой поиск по одному источнику.
+  ``search_europepmc`` / ``search_minzdrav`` — сырой поиск по одному источнику.
 - ``summarize_text`` — резюме текста (Sumy LSA).
 """
 
@@ -40,12 +40,13 @@ mcp = MCPServer(
     "publication-tracker",
     instructions=(
         "Мультиагентный поиск публикаций по источникам: archive.org, arXiv, "
-        "OpenAlex, Habr и Europe PMC. Сначала вызывайте list_sources, чтобы "
-        "увидеть каталог, затем search_publications для проверенного поиска "
-        "или search_<источник> для сырого поиска по одному источнику. Даты — "
-        "строки ГГГГ-ММ-ДД, по умолчанию последняя неделя. Результат — записи "
-        "с названием, ссылкой, аннотацией и датой; это справка по публикациям, "
-        "а не медицинская рекомендация."
+        "OpenAlex, Habr, Europe PMC и Рубрикатор КР Минздрава РФ. Сначала "
+        "вызывайте list_sources, чтобы увидеть каталог, затем "
+        "search_publications для проверенного поиска или search_<источник> для "
+        "сырого поиска по одному источнику. Даты — строки ГГГГ-ММ-ДД, по "
+        "умолчанию последняя неделя. Результат — записи с названием, ссылкой, "
+        "аннотацией и датой; это справка по публикациям, а не медицинская "
+        "рекомендация."
     ),
     log_level="WARNING",
 )
@@ -82,7 +83,7 @@ def search_publications(
     topics: Annotated[list[str], Field(description="Темы, по одной фразе на элемент")],
     sources: Annotated[
         Optional[list[str]],
-        Field(description="Id источников (archive, arxiv, openalex, habr, europepmc). Пусто — все."),
+        Field(description="Id источников (archive, arxiv, openalex, habr, europepmc, minzdrav). Пусто — все."),
     ] = None,
     rows: Annotated[int, Field(description="Сколько записей запрашивать с каждого источника, 1–100")] = 20,
     date_from: Annotated[Optional[str], Field(description="Дата «с», ГГГГ-ММ-ДД. Пусто — неделя по умолчанию")] = None,
@@ -169,6 +170,21 @@ def search_habr(
 ) -> dict:
     """Сырой поиск по Habr без валидатора."""
     return _run(_search_source, "habr", topics, rows, date_from, date_to)
+
+
+@_register_source(
+    "minzdrav",
+    "Поиск Рубрикатора КР Минздрава",
+    "Сырой поиск по Рубрикатору клинических рекомендаций Минздрава РФ: карточки КР по названию, коду МКБ-10 или возрасту. Русскоязычный источник.",
+)
+def search_minzdrav(
+    topics: Annotated[list[str], Field(description="Темы: название заболевания, синоним или код МКБ-10, например «астма» или «J45»")],
+    rows: Annotated[int, Field(description="Сколько записей вернуть, 1–100")] = 20,
+    date_from: Annotated[Optional[str], Field(description="Год «с» (ГГГГ-ММ-ДД); фильтр идёт по году пересмотра. Пусто — неделя по умолчанию")] = None,
+    date_to: Annotated[Optional[str], Field(description="Год «по» (ГГГГ-ММ-ДД). Пусто — неделя по умолчанию")] = None,
+) -> dict:
+    """Сырой поиск по Рубрикатору КР Минздрава без валидатора."""
+    return _run(_search_source, "minzdrav", topics, rows, date_from, date_to)
 
 
 @mcp.tool(

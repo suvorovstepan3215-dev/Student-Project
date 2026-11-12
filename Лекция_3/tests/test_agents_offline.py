@@ -23,6 +23,7 @@ import utils  # noqa: E402  (импорт настраивает общий ло
 import europepmc_agent  # noqa: E402
 import habr_agent  # noqa: E402
 import mcp_service  # noqa: E402
+import minzdrav_agent  # noqa: E402
 import openalex_agent  # noqa: E402
 import scraper  # noqa: E402
 import validator  # noqa: E402
@@ -143,6 +144,16 @@ EUROPEPMC_RESPONSE = {
         ]
     },
 }
+
+# Страница класса МКБ-10 рубрикатора (зеркало minzdrav.clinirec.ru): компактный
+# список КР — ссылки /kr/ с текстом «Название МКБ-10: КОДЫ ВОЗРАСТ ГОД».
+# Четвёртая ссылка ведёт не на КР (не /kr/), её агент должен пропустить.
+MINZDRAV_CLASS_HTML = """<html><body>
+<a href="https://minzdrav.clinirec.ru/kr/bronhialnaya-astma/">Бронхиальная астмаМКБ-10: J45, J45.0, J45.8, J45.9, J46Взрослые, дети2024</a>
+<a href="https://minzdrav.clinirec.ru/kr/askaridoz/">АскаридозМКБ-10: B77Взрослые, дети2025</a>
+<a href="https://minzdrav.clinirec.ru/kr/vich-infekciya-u-vzroslyh/">ВИЧ-инфекция у взрослыхМКБ-10: B20, B21, B22, B23, B24Взрослые2024</a>
+<a href="https://minzdrav.clinirec.ru/mkb-10/kod/a01/">Брюшной тиф (не карточка КР)</a>
+</body></html>"""
 
 
 class FakeResponse:
@@ -284,7 +295,7 @@ check("запрос: слова темы через пробел, темы че�
 
 print("\n6. Валидатор на записях Habr, OpenAlex и Europe PMC")
 check("Habr не входит в источники с полной аннотацией",
-      validator.SOURCES_WITH_ABSTRACT == {"arxiv", "openalex", "europepmc"},
+      validator.SOURCES_WITH_ABSTRACT == {"arxiv", "openalex", "europepmc", "minzdrav"},
       str(validator.SOURCES_WITH_ABSTRACT))
 downloads = []
 validator.extract_text_from_url = lambda url: downloads.append(url) or "текст страницы про multi-agent системы"
@@ -317,6 +328,43 @@ check("принята запись с темой в лиде", ids == ["habr:103
 check("записи без темы отклонены",
       "habr:1053878" not in ids and "habr:1025736" not in ids, str(ids))
 check("история пополнена префиксами habr:", utils.get_history() == ids, str(utils.get_history()))
+
+print("\n7.5 Минздрав: разбор страницы класса МКБ-10 и каталог")
+entries = minzdrav_agent._parse_class_page(MINZDRAV_CLASS_HTML)
+check("из 4 ссылок распознано 3 карточки КР (не /kr/ пропущена)", len(entries) == 3, str([e["slug"] for e in entries]))
+asthma = next(e for e in entries if e["slug"] == "bronhialnaya-astma")
+check("название без «МКБ-10:»", asthma["title"] == "Бронхиальная астма", asthma["title"])
+check("коды МКБ-10 выделены", asthma["codes"] == "J45, J45.0, J45.8, J45.9, J46", asthma["codes"])
+check("возраст — составная категория", asthma["age"] == "Взрослые, дети", asthma["age"])
+check("год пересмотра выделен", asthma["year"] == 2024, str(asthma["year"]))
+check("ссылка абсолютная из href", asthma["url"].endswith("/kr/bronhialnaya-astma/"), asthma["url"])
+catalog = minzdrav_agent.build_catalog(pages={"https://minzdrav.clinirec.ru/mkb-10/i/": MINZDRAV_CLASS_HTML})
+check("каталог ключом по slug, 3 записи", set(catalog) == {"bronhialnaya-astma", "askaridoz", "vich-infekciya-u-vzroslyh"}, str(set(catalog)))
+check("запись без «МКБ-10:» не разбирается", minzdrav_agent._parse_entry("Просто текст без кодов", "/kr/x/", "x") is None)
+
+print("\n7.6 Минздрав: fetch по теме и фильтр по году пересмотра")
+_real_get = minzdrav_agent._http_get
+minzdrav_agent._http_get = lambda url: MINZDRAV_CLASS_HTML
+try:
+    found_asthma = minzdrav_agent.fetch(["астма"], rows=10, date_from=date(2015, 1, 1), date_to=date(2026, 12, 31))
+    check("тема «астма» находит Бронхиальную астму (2024)",
+          [i["identifier"] for i in found_asthma] == ["minzdrav:bronhialnaya-astma"],
+          str([i["identifier"] for i in found_asthma]))
+    check("аннотация содержит коды МКБ-10", "МКБ-10:" in found_asthma[0]["abstract"], found_asthma[0]["abstract"][:60])
+    check("дата публикации — 1 января года пересмотра", found_asthma[0]["published"] == "2024-01-01", found_asthma[0]["published"])
+    found_by_code = minzdrav_agent.fetch(["J45"], rows=10, date_from=date(2015, 1, 1), date_to=date(2026, 12, 31))
+    check("поиск по коду МКБ-10 J45 тоже находит астму", found_by_code and found_by_code[0]["identifier"] == "minzdrav:bronhialnaya-astma")
+    found_hiv = minzdrav_agent.fetch(["ВИЧ"], rows=10, date_from=date(2015, 1, 1), date_to=date(2026, 12, 31))
+    check("тема «ВИЧ» находит соответствующую КР", found_hiv and found_hiv[0]["identifier"] == "minzdrav:vich-infekciya-u-vzroslyh")
+    # Фильтр по году пересмотра: астма (2024) вне окна 2025–2026, аскаридоз (2025) — внутри.
+    none = minzdrav_agent.fetch(["астма"], rows=10, date_from=date(2025, 1, 1), date_to=date(2026, 12, 31))
+    check("окно 2025–2026 исключает астму (пересмотр 2024)", none == [], str([i["identifier"] for i in none]))
+    ask = minzdrav_agent.fetch(["аскаридоз"], rows=10, date_from=date(2025, 1, 1), date_to=date(2026, 12, 31))
+    check("окно 2025–2026 включает аскаридоз (пересмотр 2025)", ask and ask[0]["identifier"] == "minzdrav:askaridoz", str([i["identifier"] for i in ask]))
+    empty = minzdrav_agent.fetch(["  ", ""], rows=10, date_from=date(2015, 1, 1), date_to=date(2026, 12, 31))
+    check("пустые темы — без результата", empty == [])
+finally:
+    minzdrav_agent._http_get = _real_get
 
 print("\n8. Europe PMC: разбор JSON")
 ep_record = europepmc_agent._to_item(EUROPEPMC_RESPONSE["resultList"]["result"][0])
@@ -422,7 +470,7 @@ try:
     _tools = _asyncio.run(_mcp_server.mcp.list_tools())
     _names = {tool.name for tool in _tools}
     _expected = {"list_sources", "search_publications", "search_europepmc", "search_openalex",
-                 "search_arxiv", "search_archive", "search_habr", "summarize_text"}
+                 "search_arxiv", "search_archive", "search_habr", "search_minzdrav", "summarize_text"}
     check("сервер регистрирует все tools", _names == _expected, str(sorted(_names)))
     _result = _asyncio.run(_mcp_server.mcp.call_tool("list_sources", {}))
     import json as _json
