@@ -4,6 +4,8 @@ beautifulsoup4==4.15.0
 pyyaml==6.0.3
 sumy==0.11.0
 nltk==3.10.4
+# Required by actual LSA, including the MCP-only distribution without Streamlit.
+numpy==2.4.6
 apscheduler==3.11.3
 streamlit==1.67.0
 pandas==2.3.3

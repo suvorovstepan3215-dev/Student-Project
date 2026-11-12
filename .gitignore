@@ -16,3 +16,8 @@ history.json.lock
 !.env.example
 .streamlit/secrets.toml
 .DS_Store
+
+# Standalone kit virtual environments and generated archives.
+streamlit_web/.venv/
+local_pc/.venv/
+downloads/

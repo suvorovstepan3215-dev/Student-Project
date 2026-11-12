@@ -4,10 +4,18 @@ on:
   push:
     paths:
       - 'Лекция_3/**'
+      - 'streamlit_web/**'
+      - 'local_pc/**'
+      - 'tools/**'
+      - 'variant_templates/**'
       - '.github/workflows/tracker-tests.yml'
   pull_request:
     paths:
       - 'Лекция_3/**'
+      - 'streamlit_web/**'
+      - 'local_pc/**'
+      - 'tools/**'
+      - 'variant_templates/**'
       - '.github/workflows/tracker-tests.yml'
 
 permissions:

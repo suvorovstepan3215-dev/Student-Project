@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.log
+*.log.[0-9]*
+history.json
+history.json.lock
+*.tmp
+.env
+.env.*
+.streamlit/secrets.toml
+atomic-chat.json
+tools/*.json
