@@ -103,22 +103,31 @@ sh start.sh --server.port 8502
 
 ## 5. Публикация в Streamlit Community Cloud (бесплатный хостинг)
 
-Важно: Streamlit Cloud собирает приложение **из GitHub-репозитория**, а не из
-ZIP на компьютере. Загрузите папку `streamlit_web` в свой репозиторий
-(например, отдельным репозиторием, где `streamlit_app.py` и
-`requirements.txt` лежат в корне), затем:
+Streamlit Cloud собирает приложение **из GitHub-репозитория**, а не из ZIP на
+компьютере. Два пути:
 
-1. <https://share.streamlit.io> → **Create app** → **Deploy a public app from GitHub**.
-2. Repository: ваш репозиторий; Branch: `main`; **Main file path**:
-   `streamlit_app.py` (или `streamlit_web/streamlit_app.py`, если папка лежит
-   внутри общего репозитория); Python 3.11.
-3. Deploy. URL вида `https://имя.streamlit.app` — это **только веб-страница**,
-   не MCP-сервер.
+**A. Из общего репозитория проекта.** В нём уже есть папка `streamlit_web/`:
 
-Команды для загрузки в GitHub (из папки `streamlit_web`, пустой новый
-репозиторий на github.com):
+- Repository: `suvorovstepan3215-dev/Student-Project`
+- Branch: `main`
+- **Main file path**: `streamlit_web/streamlit_app.py`
+- Python: 3.11 или 3.12
+
+`requirements.txt` и `.streamlit/config.toml` лежат рядом с `streamlit_app.py`
+и подхватываются автоматически.
+
+> Если репозиторий приватный, Cloud сможет его собрать (бесплатно — один
+> приватный app), но попросит широкий доступ к вашим репозиториям, а сам app
+> останется приватным. Чтобы ссылка работала у всех, сделайте репозиторий
+> публичным: GitHub → Settings → General → Danger Zone → Change repository
+> visibility → Public. Либо используйте путь B.
+
+**B. Отдельный репозиторий только с этой папкой** (если не хотите показывать
+остальной код). В корне нового репозитория будут `streamlit_app.py` и
+`requirements.txt`:
 
 ```sh
+cd путь/к/streamlit_web
 git init
 git add .
 git commit -m "Streamlit kit"
@@ -131,15 +140,23 @@ git push -u origin main
 Перед `commit` полезно выполнить `git status`: `.venv`, логи, `history.json`
 и `atomic-chat.json` уже исключены через `.gitignore`.
 
+Дальше: <https://share.streamlit.io> → **Create app** → **Deploy a public app
+from GitHub** → заполнить поля → **Deploy**. Через пару минут появится адрес
+`https://имя.streamlit.app` — его и отправляйте другим. Каждый `git push` в
+выбранную ветку пересобирает приложение.
+
 Публичный деплой = чужой сервер: `http://localhost:...` там **не ваш
 компьютер**, локальная Ollama недоступна, LLM в этой копии выключена. Не
 добавляйте ключи в репозиторий; секреты — только через Settings → Secrets
-хостинга, и только если действительно включаете LLM.
+хостинга, и только если действительно включаете LLM. Приложение засыпает
+после ~12 часов без посетителей: первый заход потом просто дольше грузится.
 
 ## 6. Что проверено и что нет
 
 - Проверено офлайн: импорт именно этой копии, рендер страницы, источники по
-  умолчанию, EN/RU LSA, отсутствие полей для ключей.
+  умолчанию, EN/RU LSA, отсутствие полей для ключей. Дополнительно проверено:
+  запуск из корня репозитория (`streamlit run streamlit_web/streamlit_app.py`)
+  и совместимость колёс с Python 3.12.
 - Не проверялось здесь: живой запрос к Europe PMC/Минздраву из этой копии,
   реальный деплой в Streamlit Cloud (нужен ваш GitHub-аккаунт).
 
