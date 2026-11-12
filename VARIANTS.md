@@ -91,7 +91,31 @@ No external API requests were made.
 
 ### Публикация (Streamlit Community Cloud)
 
-Streamlit Cloud собирает приложение из **GitHub-репозитория**, а не из ZIP:
+Streamlit Cloud собирает приложение из **GitHub-репозитория**, а не из ZIP.
+Есть два пути:
+
+**A. Прямо из этого репозитория (быстрее всего).** Копия уже лежит в
+`streamlit_web/`, поэтому при создании приложения укажите:
+
+- Repository: `suvorovstepan3215-dev/Student-Project`
+- Branch: `main`
+- **Main file path**: `streamlit_web/streamlit_app.py`
+- Python: 3.11 (можно 3.12)
+
+`requirements.txt` и `.streamlit/config.toml` лежат рядом с `streamlit_app.py`,
+поэтому подхватятся автоматически. Ничего дополнительно загружать не нужно.
+
+> Важно: репозиторий сейчас **приватный**. Community Cloud умеет деплоить из
+> приватного репозитория (бесплатно — один такой app на аккаунт), но при
+> подключении GitHub запросит широкий доступ ко всем вашим репозиториям, а сам
+> app по умолчанию будет приватным. Чтобы «работало и у других», проще сделать
+> репозиторий публичным: GitHub → **Settings → General → Danger Zone → Change
+> repository visibility → Public**. После этого app публичный и доступен по
+> ссылке всем. Если публичным должен быть только интерфейс, а код — нет,
+> используйте путь B.
+
+**B. Отдельный репозиторий только с веб-копией.** Тогда в корне нового
+репозитория будут `streamlit_app.py` и `requirements.txt`:
 
 ```sh
 cd /путь/к/streamlit_web
@@ -103,13 +127,18 @@ git remote add origin https://github.com/ВАШ_ЛОГИН/ИМЯ_РЕПОЗИТ
 git push -u origin main
 ```
 
-Затем <https://share.streamlit.io> → **Create app** → репозиторий, ветка
-`main`, **Main file path**: `streamlit_app.py`, Python 3.11 → **Deploy**.
-`.streamlit/config.toml` и `requirements.txt` уже в нужных местах.
+и **Main file path**: `streamlit_app.py`.
 
-Полученный адрес `https://….streamlit.app` — это **только веб-страница**, не
-MCP-эндпоинт и не ваш компьютер: локальная Ollama там недоступна, LLM в этой
-копии выключена (`ui.enable_llm: false`). Ключи в репозиторий не добавляйте.
+Затем <https://share.streamlit.io> → **Create app** → **Deploy a public app
+from GitHub** → заполнить поля выше → **Deploy**. Через минуту-две появится
+адрес `https://имя.streamlit.app`; его и отправляйте другим. Любой `git push`
+в выбранную ветку автоматически пересобирает приложение.
+
+Полученный адрес — это **только веб-страница**, не MCP-эндпоинт и не ваш
+компьютер: локальная Ollama там недоступна, LLM в этой копии выключена
+(`ui.enable_llm: false`). Ключи в репозиторий не добавляйте. Приложение
+засыпает после ~12 часов без посетителей — первый заход после этого просто
+дольше грузится.
 
 ---
 
