@@ -181,18 +181,18 @@ def parse_feed(
             continue
         if date_from <= day <= date_to:
             pairs.append((day, item))
-    logger.info(f"📥 Habr: в ленте {len(entries)} записей, в диапазоне дат {len(pairs)}")
+    logger.info(f"Habr: в ленте {len(entries)} записей, в диапазоне дат {len(pairs)}")
     return pairs
 
 
 def _fetch_topic(topic: str, date_from: date, date_to: date) -> List[Tuple[date, Dict]]:
     """Один запрос к RSS-поиску Habr по теме."""
     params = build_params(topic)
-    logger.info(f"🌐 Запрос к Habr: q={topic!r} (лента поиска)")
+    logger.info(f"Запрос к Habr: q={topic!r} (лента поиска)")
     resp = requests.get(HABR_RSS_URL, params=params, headers=HEADERS, timeout=20)
     if resp.status_code in (403, 429):
         logger.warning(
-            f"⚠️ Habr: HTTP {resp.status_code} – сайт отклонил запрос "
+            f"Habr: HTTP {resp.status_code} – сайт отклонил запрос "
             f"(возможны антибот-защита или ограничения по частоте)"
         )
     resp.raise_for_status()
@@ -214,7 +214,7 @@ def fetch(
     wanted = clean_topics(topics)
     bounded_int(rows, "rows", 1, 100)
     date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
-    logger.info(f"🌐 Habr: тем {len(wanted)}, диапазон {date_from} — {date_to} (до {rows} публикаций)")
+    logger.info(f"Habr: тем {len(wanted)}, диапазон {date_from} — {date_to} (до {rows} публикаций)")
 
     errors = []
     by_id: Dict[str, Tuple[date, Dict]] = {}
@@ -236,10 +236,10 @@ def fetch(
     pairs = sorted(by_id.values(), key=lambda pair: pair[0], reverse=True)
     items = [item for _, item in pairs]
     if len(items) > rows:
-        logger.info(f"📥 Habr: в диапазоне {len(items)}, отдано последних {rows}")
+        logger.info(f"Habr: в диапазоне {len(items)}, отдано последних {rows}")
         items = items[:rows]
     else:
-        logger.info(f"📥 Habr: отдано {len(items)}")
+        logger.info(f"Habr: отдано {len(items)}")
     return SearchResults(items, errors=errors)
 
 

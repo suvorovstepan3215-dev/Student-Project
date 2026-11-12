@@ -60,12 +60,12 @@ def fetch(
         "rows": rows,
         "output": "json",
     }
-    logger.info(f"🌐 Запрос к archive.org: {query} (последние {rows} записей)")
+    logger.info(f"Запрос к archive.org: {query} (последние {rows} записей)")
     resp = requests.get(ARCHIVE_SEARCH_URL, params=params, timeout=20)
     resp.raise_for_status()
     data = resp.json().get("response", {})
     docs = data.get("docs", [])
-    logger.info(f"📥 archive.org: всего совпадений {data.get('numFound', '?')}, загружено {len(docs)}")
+    logger.info(f"archive.org: всего совпадений {data.get('numFound', '?')}, загружено {len(docs)}")
     items = []
     for doc in docs:
         identifier = doc.get("identifier")

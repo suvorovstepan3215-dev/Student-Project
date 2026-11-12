@@ -25,7 +25,7 @@
         "Сеанс: темы, даты, история",
         "Прямой вызов Python"
       ],
-      "color": "#38bdf8"
+      "color": "#8A6D4B"
     },
     {
       "id": "orchestrator",
@@ -43,7 +43,7 @@
         "main.process_items",
         "Описание / резюме / статусы"
       ],
-      "color": "#38bdf8"
+      "color": "#8A6D4B"
     },
     {
       "id": "summarizer",
@@ -61,7 +61,7 @@
         "EN/RU LSA → fallback",
         "LLM: серверный пресет"
       ],
-      "color": "#38bdf8"
+      "color": "#8A6D4B"
     },
     {
       "id": "notifier",
@@ -79,7 +79,7 @@
         "Только CLI",
         "После успеха"
       ],
-      "color": "#94a3b8"
+      "color": "#B6AB99"
     },
     {
       "id": "client",
@@ -97,7 +97,7 @@
         "Cherry Studio / Cursor",
         "Или mcp_client.py"
       ],
-      "color": "#a78bfa"
+      "color": "#7D8B74"
     },
     {
       "id": "mcp",
@@ -115,7 +115,7 @@
         "mcp_server.py",
         "9 read-only tools"
       ],
-      "color": "#a78bfa"
+      "color": "#7D8B74"
     },
     {
       "id": "service",
@@ -133,7 +133,7 @@
         "mcp_service.py",
         "Каталог / поиск / резюме"
       ],
-      "color": "#a78bfa"
+      "color": "#7D8B74"
     },
     {
       "id": "scraper",
@@ -151,7 +151,7 @@
         "scraper.py",
         "Записи + errors / warnings"
       ],
-      "color": "#38bdf8"
+      "color": "#8A6D4B"
     },
     {
       "id": "validator",
@@ -169,7 +169,7 @@
         "Слова темы / русские основы",
         "Не медицинский фактчекинг"
       ],
-      "color": "#38bdf8"
+      "color": "#8A6D4B"
     },
     {
       "id": "europepmc",
@@ -187,7 +187,7 @@
         "REST / core / курсор",
         "Новые первыми"
       ],
-      "color": "#34d399"
+      "color": "#6F8F78"
     },
     {
       "id": "minzdrav",
@@ -205,7 +205,7 @@
         "API → зеркало с пометкой",
         "Только метаданные"
       ],
-      "color": "#34d399"
+      "color": "#6F8F78"
     },
     {
       "id": "archive",
@@ -223,7 +223,7 @@
         "publicdate",
         "Метаданные"
       ],
-      "color": "#64748b"
+      "color": "#B6AB99"
     },
     {
       "id": "arxiv",
@@ -241,7 +241,7 @@
         "Atom / версии",
         "Аннотации"
       ],
-      "color": "#64748b"
+      "color": "#B6AB99"
     },
     {
       "id": "openalex",
@@ -259,7 +259,7 @@
         "REST / курсор",
         "Аннотации"
       ],
-      "color": "#64748b"
+      "color": "#B6AB99"
     },
     {
       "id": "habr",
@@ -277,7 +277,7 @@
         "RSS / pubDate",
         "Ограниченная лента"
       ],
-      "color": "#64748b"
+      "color": "#B6AB99"
     }
   ],
   "connections": [

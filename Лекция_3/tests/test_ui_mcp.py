@@ -100,7 +100,7 @@ def test_ui_pipeline_roundtrip_and_session_only_history(monkeypatch):
     monkeypatch.setattr(main, "process_items", process)
     app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
     next(c for c in app.checkbox if c.label == "Запоминать обработанные в этом сеансе").check().run()
-    next(b for b in app.button if b.label == "🚀 Запустить поиск сейчас").click().run()
+    next(b for b in app.button if b.label == "Запустить поиск сейчас").click().run()
     assert not app.exception
     assert [metric.value for metric in app.metric] == ["2", "1", "1"]
     assert calls[0]["save_history"] is False and calls[0]["send"] is False
@@ -119,7 +119,7 @@ def test_ui_empty_outage_not_reported_as_successful_empty_search(monkeypatch):
         ),
     )
     app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
-    next(b for b in app.button if b.label == "🚀 Запустить поиск сейчас").click().run()
+    next(b for b in app.button if b.label == "Запустить поиск сейчас").click().run()
     assert not app.exception and app.error
     assert any("не доказывает" in warning.value for warning in app.warning)
 

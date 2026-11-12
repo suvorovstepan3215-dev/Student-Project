@@ -251,7 +251,7 @@ def _api_get(params: Dict) -> Dict:
         )
         if resp.status_code == 429 or resp.status_code >= 500:
             wait = 2.0 * (attempt + 1)
-            logger.warning(f"⚠️ OpenAlex: HTTP {resp.status_code} – повтор через {wait:.0f} с")
+            logger.warning(f"OpenAlex: HTTP {resp.status_code} – повтор через {wait:.0f} с")
             if attempt == 2:
                 break
             time.sleep(wait)
@@ -277,7 +277,7 @@ def _search(params: Dict, limit: int) -> List[Dict]:
                 total = int(meta.get("count") or 0)
             except (TypeError, ValueError):
                 total = 0
-            logger.info(f"📥 OpenAlex: всего совпадений {total}")
+            logger.info(f"OpenAlex: всего совпадений {total}")
         batch = [_to_item(work) for work in data.get("results") or []]
         batch = [item for item in batch if item["url"] and item["identifier"] != f"{SOURCE_ID}:"]
         if not batch:
@@ -309,9 +309,9 @@ def fetch(
         return []
     params = {"filter": query, "select": SELECT_FIELDS, "sort": "publication_date:desc"}
     params.update(_client_params())
-    logger.info(f"🌐 Запрос к OpenAlex: {query} (до {rows} работ)")
+    logger.info(f"Запрос к OpenAlex: {query} (до {rows} работ)")
     items = _search(params, rows)
-    logger.info(f"📥 OpenAlex: отдано {len(items)}")
+    logger.info(f"OpenAlex: отдано {len(items)}")
     return items
 
 

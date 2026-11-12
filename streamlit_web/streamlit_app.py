@@ -1,5 +1,6 @@
 """Public-safe Streamlit UI. Settings/history are session-local, secrets server-owned."""
 
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -21,7 +22,91 @@ METHOD_LABELS = {
     "none": "Не построено",
 }
 
-st.set_page_config(page_title="Трекер медицинских публикаций", page_icon="📚", layout="wide")
+# Calm beige/white theme: paper background, white cards, deep taupe accent.
+# Streamlit widget colours come from .streamlit/config.toml [theme]; the rest is CSS.
+_STYLE = """
+<style>
+.stApp { background: #FAF7F0; }
+[data-testid="stSidebar"] { background: #F2EEE3; border-right: 1px solid #E3DCCF; }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: #4A443B; }
+h1, h2, h3, h4 {
+    font-family: Georgia, "Times New Roman", serif;
+    color: #3F3A33;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+.app-header { border-bottom: 2px solid #E3DCCF; padding: 0.25rem 0 1.1rem; margin-bottom: 1.1rem; }
+.app-kicker {
+    font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase;
+    color: #8A6D4B; font-weight: 700; margin-bottom: 0.4rem;
+}
+.app-title {
+    font-family: Georgia, "Times New Roman", serif; font-size: 2rem; line-height: 1.15;
+    color: #3F3A33; margin: 0 0 0.4rem; font-weight: 600;
+}
+.app-sub { color: #7D766B; font-size: 0.93rem; max-width: 72ch; margin: 0; line-height: 1.45; }
+button[kind="primary"], [data-testid="stBaseButton-primary"] {
+    background: #8A6D4B !important; border: 1px solid #6F5740 !important; color: #FFFDF8 !important;
+    border-radius: 6px !important; font-weight: 600 !important; letter-spacing: 0.02em;
+}
+button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover {
+    background: #6F5740 !important; border-color: #5C4936 !important; color: #FFFDF8 !important;
+}
+button[kind="secondary"], [data-testid="stBaseButton-secondary"] {
+    background: #FFFFFF !important; color: #8A6D4B !important; border: 1px solid #D8CFBE !important;
+    border-radius: 6px !important;
+}
+button[kind="secondary"]:hover, [data-testid="stBaseButton-secondary"]:hover {
+    border-color: #8A6D4B !important; color: #6F5740 !important;
+}
+.stTabs [data-baseweb="tab-list"] { gap: 1.75rem; border-bottom: 1px solid #E3DCCF; }
+.stTabs [data-baseweb="tab"] { color: #7D766B; font-weight: 600; padding: 0.55rem 0.15rem; }
+.stTabs [aria-selected="true"] { color: #8A6D4B !important; }
+.stTabs [data-baseweb="tab-highlight"] { background-color: #8A6D4B !important; height: 3px; }
+.stTabs [data-baseweb="tab-border"] { background: #E3DCCF; }
+[data-testid="stMetric"] {
+    background: #FFFFFF; border: 1px solid #E3DCCF; border-radius: 8px;
+    padding: 0.85rem 1.1rem; box-shadow: 0 1px 2px rgba(63, 58, 51, 0.05);
+}
+[data-testid="stMetricLabel"] p {
+    color: #7D766B !important; font-size: 0.72rem !important;
+    text-transform: uppercase; letter-spacing: 0.09em;
+}
+[data-testid="stMetricValue"] { font-family: Georgia, "Times New Roman", serif; color: #3F3A33; }
+[data-testid="stExpander"] {
+    background: #FFFFFF; border: 1px solid #E3DCCF !important; border-radius: 8px !important;
+    box-shadow: 0 1px 2px rgba(63, 58, 51, 0.04);
+}
+[data-testid="stExpander"] summary { font-weight: 600; color: #3F3A33; }
+[data-testid="stAlert"] { border-radius: 8px; }
+.stLinkButton a, [data-testid="stLinkButton"] a {
+    color: #8A6D4B !important; border: 1px solid #C9BBA4 !important; background: #FFFDF8 !important;
+    border-radius: 6px !important;
+}
+.stLinkButton a:hover, [data-testid="stLinkButton"] a:hover {
+    border-color: #8A6D4B !important; color: #6F5740 !important;
+}
+[data-testid="stDataFrame"] { border: 1px solid #E3DCCF; border-radius: 8px; }
+.stTextArea textarea, .stTextInput input { border-radius: 6px !important; }
+[data-testid="stCaptionContainer"], .stCaption { color: #8D8578; }
+</style>
+"""
+
+
+def _grouped(entries):
+    """Collapse identical (source, code, message) diagnostics, keeping first-seen order."""
+    counts = Counter((e.get("source"), e.get("code"), e.get("message")) for e in entries)
+    seen = set()
+    for entry in entries:
+        key = (entry.get("source"), entry.get("code"), entry.get("message"))
+        if key in seen:
+            continue
+        seen.add(key)
+        yield entry, counts[key]
+
+
+st.set_page_config(page_title="Трекер медицинских публикаций", layout="wide")
+st.markdown(_STYLE, unsafe_allow_html=True)
 cfg = load_config()
 llm_enabled = (cfg.get("ui") or {}).get("enable_llm") is True
 allowed_providers = list(PROVIDER_LABELS) if llm_enabled else ["sumy"]
@@ -32,7 +117,7 @@ if "seen_ids" not in st.session_state:
     st.session_state["seen_ids"] = []
 
 with st.sidebar:
-    st.header("⚙️ Настройки поиска")
+    st.header("Настройки поиска")
     topics_text = st.text_area(
         "Темы (по одной в строке)",
         value="\n".join(cfg.get("topics", [])),
@@ -88,11 +173,15 @@ with st.sidebar:
         st.rerun()
     st.caption("Почта в веб-интерфейсе отключена. Планировщик запускается отдельно: python main.py.")
 
-st.title("📚 Трекер медицинских публикаций")
-st.caption(
-    "Поиск → лексическая проверка релевантности → резюме. Не медицинская рекомендация и не проверка достоверности публикаций."
+st.markdown(
+    """<div class="app-header">
+  <div class="app-kicker">Европейская медлитература · КР Минздрава РФ</div>
+  <h1 class="app-title">Трекер медицинских публикаций</h1>
+  <p class="app-sub">Поиск, лексическая проверка релевантности и локальное резюме публикаций. Не медицинская рекомендация и не проверка достоверности публикаций.</p>
+</div>""",
+    unsafe_allow_html=True,
 )
-tab_search, tab_providers, tab_diagram = st.tabs(["🔎 Поиск", "🤖 Провайдеры", "🗺 Схема агентов"])
+tab_search, tab_providers, tab_diagram = st.tabs(["Поиск", "Провайдеры", "Схема агентов"])
 
 with tab_search:
     if topics_error:
@@ -100,7 +189,7 @@ with tab_search:
     if not sources:
         st.warning("Подключите хотя бы один источник.")
     run = st.button(
-        "🚀 Запустить поиск сейчас",
+        "Запустить поиск сейчас",
         type="primary",
         disabled=bool(topics_error) or not sources or not dates_ok,
     )
@@ -146,10 +235,17 @@ with tab_search:
     if st.session_state.get("run_error"):
         st.error(st.session_state["run_error"])
     diagnostics = st.session_state.get("diagnostics", {})
-    for error in diagnostics.get("errors", []):
-        st.error(f"{SOURCE_NAMES.get(error['source'], error['source'])}: {error['message']}")
-    for warning in diagnostics.get("warnings", []):
-        st.warning(f"{SOURCE_NAMES.get(warning['source'], warning['source'])}: {warning['message']}")
+    for error, count in _grouped(diagnostics.get("errors", [])):
+        suffix = f" (повторяется: {count})" if count > 1 else ""
+        st.error(f"{SOURCE_NAMES.get(error['source'], error['source'])}: {error['message']}{suffix}")
+    for warning, count in _grouped(diagnostics.get("warnings", [])):
+        message = warning["message"]
+        if count > 1:
+            if warning.get("code") == "text_unavailable":
+                message = f"У {count} записей нет текста для резюме; в историю они не записаны."
+            else:
+                message = f"{message} (повторяется: {count})"
+        st.warning(f"{SOURCE_NAMES.get(warning['source'], warning['source'])}: {message}")
     statuses = diagnostics.get("source_statuses", {})
     if statuses:
         labels = {"ok": "доступен", "partial": "неполные данные / ограничения", "error": "ошибка"}
@@ -184,7 +280,7 @@ with tab_search:
                     "Подходящих записей в диапазоне не найдено. Попробуйте изменить тему, расширить даты или выключить пропуск просмотренных."
                 )
         else:
-            cards, table = st.tabs(["🗂 Карточки", "📋 Таблица"])
+            cards, table = st.tabs(["Карточки", "Таблица"])
             with cards:
                 for index, item in enumerate(results, 1):
                     source = SOURCE_NAMES.get(item.get("source"), item.get("source", "—"))
@@ -194,7 +290,7 @@ with tab_search:
                     ):
                         # External titles/summaries are plain text, not executable Markdown/HTML.
                         st.text(item.get("title") or "Без названия")
-                        st.link_button("Открыть запись источника ↗", item["url"])
+                        st.link_button("Открыть запись источника", item["url"])
                         st.caption("ID: " + item["identifier"])
                         if item.get("authors"):
                             st.text("Авторы: " + item["authors"])
