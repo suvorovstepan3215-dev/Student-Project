@@ -24,14 +24,18 @@ TEMPLATES = ROOT / "variant_templates"
 COMMON_MODULES = (
     "archive_agent.py", "arxiv_agent.py", "europepmc_agent.py", "habr_agent.py",
     "minzdrav_agent.py", "openalex_agent.py", "network.py", "results.py",
-    "scraper.py", "security.py", "summarizer.py", "utils.py", "validation.py", "validator.py",
+    "scraper.py", "security.py", "summarizer.py",
+    "utils.py", "validation.py", "validator.py",
 )
 COMMON_REQUIREMENTS = (
     "requests", "beautifulsoup4", "pyyaml", "sumy", "nltk", "numpy", "filelock", "defusedxml", "urllib3",
 )
 PROFILES = {
     "streamlit_web": {
-        "source": ("main.py", "notifier.py", "streamlit_app.py", "diagr/agents.html", "diagr/agents.png"),
+        "source": (
+            "main.py", "notifier.py", "streamlit_app.py", "translator.py",
+            "diagr/agents.html", "diagr/agents.png", "diagr/presentation.html",
+        ),
         "templates": ("README.md", "check_setup.py", "start.sh", "start.ps1"),
         "requirements": ("apscheduler", "streamlit", "pandas", "pillow"),
     },

@@ -21,7 +21,7 @@ def main() -> int:
     app = AppTest.from_file(str(directory / "streamlit_app.py"), default_timeout=20).run()
     if app.exception:
         raise RuntimeError("Streamlit rendering failed; inspect the traceback above.")
-    if app.multiselect[0].value != ["europepmc", "minzdrav"]:
+    if app.multiselect[0].value != ["europepmc", "openalex", "minzdrav"]:
         raise RuntimeError("Unexpected default sources.")
     if app.text_input:
         raise RuntimeError("Public UI must not ask for endpoints, keys or env names.")

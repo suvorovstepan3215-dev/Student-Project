@@ -178,3 +178,51 @@ def test_official_date_parsing(value, expected):
 
 def test_official_unknown_id_is_not_fabricated():
     assert mz._official_entry(official_record("mirror-slug")) is None
+
+
+def test_topic_aliases_expand_minzdrav_matching(monkeypatch):
+    monkeypatch.setattr(
+        mz,
+        "_settings",
+        lambda: {
+            "mode": "mirror",
+            "base_url": mz.DEFAULT_BASE_URL,
+            "ttl": 900,
+            "topic_aliases": {"сахарный диабет": ["диабет", "E10", "E11"]},
+        },
+    )
+    card = mirror_entry(
+        slug="dm1",
+        year=2026,
+        title="Клинические рекомендации (дети и подростки)",
+        codes="E10",
+        age="Дети",
+    )
+    monkeypatch.setattr(mz, "get_catalog", lambda: mz.Catalog({"dm1": card}))
+    result = mz.fetch(["сахарный диабет"], 5, START, END)
+    assert [item["identifier"] for item in result] == ["minzdrav:dm1"]
+    assert any(w["code"] == "topic_aliases" for w in result.warnings)
+
+
+def test_topic_aliases_absent_means_no_extra_matches(monkeypatch):
+    card = mirror_entry(
+        slug="dm1",
+        year=2026,
+        title="Клинические рекомендации (дети и подростки)",
+        codes="E10",
+        age="Дети",
+    )
+    monkeypatch.setattr(mz, "get_catalog", lambda: mz.Catalog({"dm1": card}))
+    result = mz.fetch(["сахарный диабет"], 5, START, END)
+    assert not result and not any(w["code"] == "topic_aliases" for w in result.warnings)
+
+
+def test_topic_aliases_config_is_validated():
+    assert mz._parse_topic_aliases(None) == {}
+    assert mz._parse_topic_aliases({"тема": ["E10", "E11"]}) == {"тема": ["E10", "E11"]}
+    with pytest.raises(ValueError):
+        mz._parse_topic_aliases(["E10"])
+    with pytest.raises(ValueError):
+        mz._parse_topic_aliases({"тема": "E10"})
+    with pytest.raises(ValueError):
+        mz._parse_topic_aliases({"тема": ["  "]})

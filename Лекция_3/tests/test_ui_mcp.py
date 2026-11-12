@@ -62,7 +62,7 @@ def test_real_stdio_discovery_and_russian_summary(monkeypatch, tmp_path):
 def test_ui_default_has_no_secret_endpoint_controls_or_shared_file_actions():
     app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
     assert not app.exception
-    assert app.multiselect[0].value == ["europepmc", "minzdrav"]
+    assert app.multiselect[0].value == ["europepmc", "openalex", "minzdrav"]
     assert len(app.multiselect[0].options) == 6
     assert not app.text_input  # No endpoint, env-variable name or API-key form.
     labels = {button.label for button in app.button}
@@ -142,3 +142,61 @@ def test_mcp_subprocess_environment_is_whitelisted(monkeypatch, tmp_path):
     assert params.env["TRACKER_DATA_DIR"] == str(tmp_path)
     assert params.env["OPENALEX_API_KEY"] == "synthetic"
     assert "UNRELATED_SERVER_SECRET" not in params.env
+
+
+def _canned_process(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "process_items",
+        lambda **kwargs: SearchResults(
+            [
+                item(
+                    summary="A short abstract about diabetes care and outcomes in practice.",
+                    summary_method="sumy_lsa_regex",
+                    status="Резюме готово",
+                ),
+            ],
+        ),
+    )
+
+
+def test_translate_button_translates_and_hides_summary(monkeypatch):
+    import translator
+
+    _canned_process(monkeypatch)
+    monkeypatch.setattr(translator, "translate_text", lambda text, target: "Короткое резюме про диабет.")
+    app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
+    next(b for b in app.button if b.label == "Запустить поиск сейчас").click().run()
+    assert not app.exception
+    translate = next(b for b in app.button if b.label.startswith("Перевести резюме"))
+    assert translate.label == "Перевести резюме на русский"
+    translate.click().run()
+    assert not app.exception
+    assert any("Короткое резюме про диабет." in info.value for info in app.info)
+    hide = next(b for b in app.button if b.label == "Скрыть перевод")
+    hide.click().run()
+    assert not app.exception
+    assert not any("Короткое резюме про диабет." in info.value for info in app.info)
+
+
+def test_translate_button_failure_shows_warning_and_keeps_original(monkeypatch):
+    import translator
+
+    _canned_process(monkeypatch)
+
+    def failing(text, target):
+        raise translator.TranslatorUnavailable("Сервис перевода недоступен.")
+
+    monkeypatch.setattr(translator, "translate_text", failing)
+    app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
+    next(b for b in app.button if b.label == "Запустить поиск сейчас").click().run()
+    next(b for b in app.button if b.label.startswith("Перевести резюме")).click().run()
+    assert not app.exception
+    assert any("Не удалось перевести" in warning.value for warning in app.warning)
+
+
+def test_presentation_tab_is_available(monkeypatch):
+    app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
+    assert not app.exception
+    assert [tab.label for tab in app.tabs][-1] == "Презентация"
+    assert len(app.tabs) == 4

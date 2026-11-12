@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Трекер медицинских публикаций — презентация</title>
+<style>
+  :root {
+    --paper: #FAF7F0;
+    --card: #FFFFFF;
+    --ink: #3F3A33;
+    --muted: #7D766B;
+    --line: #E3DCCF;
+    --accent: #8A6D4B;
+    --accent-hover: #6F5740;
+    --accent-soft: #EFE7D8;
+    --sage: #6F8F78;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15.5px;
+    line-height: 1.55;
+    overflow: hidden;
+  }
+  .deck { position: relative; height: calc(100% - 46px); }
+  .slide {
+    display: none;
+    height: 100%;
+    padding: 34px 48px 26px;
+    overflow: auto;
+  }
+  .slide.active { display: block; animation: fade 180ms ease-out; }
+  @keyframes fade { from { opacity: 0.25; } to { opacity: 1; } }
+  .kicker {
+    font-size: 0.72rem; letter-spacing: 0.17em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700; margin-bottom: 10px;
+  }
+  h1 {
+    font-family: Georgia, "Times New Roman", serif; font-weight: 600;
+    font-size: 2.5rem; line-height: 1.12; letter-spacing: 0.01em; margin-bottom: 16px;
+  }
+  h2 {
+    font-family: Georgia, "Times New Roman", serif; font-weight: 600;
+    font-size: 1.62rem; line-height: 1.2; margin-bottom: 14px;
+  }
+  .rule { border: 0; border-top: 2px solid var(--line); margin: 14px 0 18px; }
+  .sub { color: var(--muted); font-size: 1.02rem; max-width: 62ch; }
+  .fine { color: var(--muted); font-size: 0.78rem; margin-top: 18px; border-top: 1px solid var(--line); padding-top: 10px; }
+  p, li { color: var(--ink); }
+  ul { padding-left: 1.15em; }
+  li { margin: 4px 0; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  .panel {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; box-shadow: 0 1px 2px rgba(63,58,51,0.05);
+  }
+  .panel h3 {
+    font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--muted); margin-bottom: 8px; font-weight: 700;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  .tag { display: inline-block; background: var(--accent-soft); color: var(--accent-hover); border-radius: 4px; padding: 1px 7px; font-size: 0.75rem; font-weight: 600; }
+  .tag.sage { background: #E9EFE7; color: #3E5A45; }
+  .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 16px 0 8px; }
+  .box {
+    background: var(--card); border: 1.5px solid var(--accent); border-radius: 8px;
+    padding: 10px 12px; font-size: 0.85rem; min-height: 74px;
+  }
+  .box strong { display: block; margin-bottom: 4px; font-size: 0.9rem; }
+  .box span { color: var(--muted); font-size: 0.78rem; }
+  .box.sage { border-color: var(--sage); }
+  .box.muted { border-color: #C9BFAE; }
+  .flow-note { color: var(--muted); font-size: 0.8rem; }
+  ol.steps { counter-reset: step; list-style: none; padding-left: 0; }
+  ol.steps > li {
+    counter-increment: step; position: relative; padding-left: 2.4em; margin: 10px 0;
+  }
+  ol.steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: -2px;
+    width: 1.7em; height: 1.7em; border-radius: 50%;
+    background: var(--accent); color: #FFFDF8; font-weight: 700;
+    text-align: center; line-height: 1.7em; font-size: 0.85rem;
+  }
+  .hud {
+    height: 46px; border-top: 1px solid var(--line); background: var(--card);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 14px; gap: 12px;
+  }
+  .hud button {
+    font: inherit; font-size: 0.82rem; color: var(--accent); background: transparent;
+    border: 1px solid #C9BBA4; border-radius: 6px; padding: 5px 14px; cursor: pointer;
+  }
+  .hud button:hover { color: var(--accent-hover); border-color: var(--accent); }
+  .hud button:disabled { opacity: 0.35; cursor: default; }
+  .dots { display: flex; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); border: 0; padding: 0; cursor: pointer; }
+  .dot.active { background: var(--accent); }
+  .count { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; min-width: 44px; text-align: center; }
+  .footerbar {
+    position: absolute; bottom: 0; left: 0; right: 0; color: var(--muted); font-size: 0.74rem;
+    padding: 0 48px 12px; display: flex; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 10px;
+  }
+  .slide { padding-bottom: 44px; }
+</style>
+</head>
+<body>
+<main class="deck" id="deck">
+
+  <section class="slide active">
+    <div class="kicker">Учебный проект · Мультиагентные системы</div>
+    <h1>Трекер медицинских публикаций</h1>
+    <p class="sub">Мультиагентный поиск по научным статьям и клиническим рекомендациям: запрос → лексическая проверка релевантности → экстрактивное резюме. Веб-интерфейс (Streamlit) и отдельный MCP-сервер по stdio.</p>
+    <hr class="rule">
+    <div class="panel">
+      <h3>Что на входе</h3>
+      <p>Темы на естественном языке («diabetes», «сахарный диабет»), диапазон дат, источники. На выходе — карточки найденных записей с резюме, методом резюме, происхождением данных и диагностикой источников.</p>
+    </div>
+    <div class="fine">Это учебный инструмент поиска и сжатия текста. Не медицинская рекомендация, не проверка достоверности публикаций и не замена чтению клинической рекомендации.</div>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">01 · Задача</div>
+    <h2>Кому и зачем</h2>
+    <div class="cols">
+      <div class="panel">
+        <h3>Вопросы, на которые отвечаем</h3>
+        <ul>
+          <li>Что нового опубликовали по теме за неделю / месяц?</li>
+          <li>Какие клинические рекомендации РФ актуальны сейчас?</li>
+          <li>Какую запись читать первой и почему (резюме в три предложения)?</li>
+          <li>Откуда взялись данные и можно ли им верить слепо?</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>Чего принципиально не делаем</h3>
+        <ul>
+          <li>Не даём медицинских советов и не назначаем лечения.</li>
+          <li>Не проверяем факты статьи (лексика ≠ фактчекинг).</li>
+          <li>Не выдаём метаданные каталога КР за текст рекомендации.</li>
+          <li>Не отправляем анонимные запросы к платным LLM.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">02 · Источники</div>
+    <h2>Три по умолчанию, три в запасе</h2>
+    <table>
+      <thead><tr><th>Источник</th><th>Что даёт</th><th>Ограничения</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Europe PMC</strong><br><span class="tag">по умолчанию</span></td><td>REST <code>resultType=core</code>: аннотация, авторы, журнал, даты</td><td>Не у всех записей есть аннотация; полнотекст — только OA-подмножество</td></tr>
+        <tr><td><strong>OpenAlex</strong><br><span class="tag">по умолчанию</span></td><td>Открытый научный граф, без ключа, аннотации (inverted index)</td><td>Метаданные неоднородны; нужны вежливые лимиты (mailto)</td></tr>
+        <tr><td><strong>Каталог КР Минздрава РФ</strong><br><span class="tag">по умолчанию</span></td><td>Официальные клинические рекомендации РФ (МКБ-10, возраст, версия)</td><td>Зеркало: только год и метаданные. Официальный API — в коде (режим auto), нужен доступ из сети</td></tr>
+        <tr><td>archive.org · arXiv · Habr<br><span class="tag sage">адаптеры</span></td><td>Метаданные / аннотации / RSS-лента</td><td>Подключаются в интерфейсе; archive.org и arXiv — шире медицины</td></tr>
+      </tbody>
+    </table>
+    <p class="flow-note" style="margin-top:10px">Выбор по реестру medinfo «Источники.pdf»: свободно, без ключей, с машиночитаемыми API — там, где это возможно.</p>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">03 · Архитектура</div>
+    <h2>Модули-агенты и один MCP</h2>
+    <div class="flow">
+      <div class="box"><strong>Streamlit UI</strong><span>сеанс: темы, даты, история</span></div>
+      <div class="box"><strong>Оркестратор</strong><span>main.process_items</span></div>
+      <div class="box"><strong>Координатор</strong><span>scraper: записи + диагностика</span></div>
+      <div class="box"><strong>Валидатор</strong><span>слова темы / русские основы</span></div>
+      <div class="box"><strong>Суммаризатор</strong><span>Sumy LSA (EN/RU) → fallback</span></div>
+    </div>
+    <div class="flow" style="grid-template-columns: repeat(3, 1fr)">
+      <div class="box sage"><strong>Europe PMC</strong><span>REST / core / курсор</span></div>
+      <div class="box sage"><strong>OpenAlex</strong><span>REST / курсор / аннотации</span></div>
+      <div class="box sage"><strong>Каталог КР</strong><span>официальный API → зеркало (пометка)</span></div>
+    </div>
+    <div class="flow" style="grid-template-columns: 1fr 2fr">
+      <div class="box muted"><strong>MCP-сервер stdio</strong><span>9 read-only tools</span></div>
+      <div class="box muted"><strong>Внешний MCP-host</strong><span>Atomic Chat / Cursor / Claude Desktop — чат вызывает инструменты: search_publications, summarize_text, …</span></div>
+    </div>
+    <p class="flow-note">Streamlit вызывает Python напрямую. MCP — отдельный stdio-интерфейс, это не URL сайта и не медицинский чат.</p>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">04 · Как это работает</div>
+    <h2>Пять шагов поиска</h2>
+    <ol class="steps">
+      <li><strong>Запрос.</strong> Темы по одной в строке; для Европы удобнее английский, для КР — русский или код МКБ-10. Алиасы (E10–E14) настраиваются в конфиге сервера.</li>
+      <li><strong>Обход источников.</strong> Каждый источник возвращает записи или честные errors/warnings; ошибка источника ≠ «ничего не найдено».</li>
+      <li><strong>Лексическая проверка.</strong> Слова темы / русские основы; для КР-карточек сверяются заголовок, коды МКБ-10 и возрастная категория.</li>
+      <li><strong>Резюме.</strong> Локальный Sumy LSA для EN и RU (без LLM и без ключей); при сбое — первые предложения с явной пометкой.</li>
+      <li><strong>Выдача.</strong> Карточки и таблица: метод резюме, происхождение данных, предупреждения; история — только в сеансе браузера.</li>
+    </ol>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">05 · Честно</div>
+    <h2>Ограничения и правила честности</h2>
+    <ul>
+      <li><strong>Зеркало КР — не официальный источник.</strong> Оно знает только год пересмотра; актуальность и соответствие официальным КР не проверяются.</li>
+      <li><strong>Карточка КР ≠ резюме.</strong> Показывается описание метаданных (МКБ-10, возраст, год), не текст клинической рекомендации.</li>
+      <li><strong>Ошибка источника ≠ отсутствие публикаций.</strong> В интерфейсе видны статус каждого источника и текст сбоя без секретов.</li>
+      <li><strong>Без LLM по умолчанию.</strong> Публичный режим: анонимных запросов к платным моделям нет; резюме строится локально.</li>
+      <li><strong>Секреты — только на сервере.</strong> Ключи не вводятся в браузере и не сохраняются в сеансе.</li>
+      <li><strong>История — в пределах сеанса.</strong> Просмотренные записи можно пропускать в рамках текущего открытого окна.</li>
+    </ul>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">06 · Демо</div>
+    <h2>Как показать за две минуты</h2>
+    <ol class="steps">
+      <li>Темы: <code>diabetes</code> и <code>сахарный диабет</code>; период для статей — «Месяц», для КР — <strong>«Произвольный» с 2020</strong> (зеркало знает только год).</li>
+      <li>Источники по умолчанию: Europe PMC + OpenAlex + Каталог КР. Строк с источника — 10.</li>
+      <li>«Запустить поиск сейчас». Смотрите метод резюме: у ePMC сегодня нет текста — OpenAlex почти всегда даёт аннотацию.</li>
+      <li>Карточка: «Открыть запись источника», «Перевести резюме», предупреждения внизу списка. Таблица — для выгрузки глазами.</li>
+    </ol>
+    <div class="panel" style="margin-top:12px">
+      <h3>Страховка на выступлении</h3>
+      <p>Если внешняя сеть подведёт — живой поиск честно скажет об ошибке; офлайн-часть (интерфейс, карточки, таблица) работает всегда.</p>
+    </div>
+  </section>
+
+  <section class="slide">
+    <div class="kicker">07 · Дальше</div>
+    <h2>Куда развивать</h2>
+    <ul>
+      <li><strong>Официальный API Минздрава</strong> (<code>apicr.minzdrav.gov.ru</code>) — уже реализован в адаптере (режим <code>auto</code>); нужна доступная из сети точка входа.</li>
+      <li><strong>Полный текст открытого доступа</strong>: Europe PMC <code>fullTextXML</code> для OA-статей — резюме по тексту, а не по аннотации.</li>
+      <li><strong>Реестр medinfo</strong>: PubMed E-utilities, Unpaywall, киберЛенинка — как следующие адаптеры тем же интерфейсом.</li>
+      <li><strong>Метрики качества</strong>: доля записей с резюме, ложные совпадения лексики — на реальных запросах семинара.</li>
+    </ul>
+    <hr class="rule">
+    <p class="sub" style="font-size:1.15rem; font-family: Georgia, serif; color: var(--ink)">Спасибо. Вопросы и замечания приветствуются.</p>
+  </section>
+
+</main>
+
+<nav class="hud" aria-label="Навигация по слайдам">
+  <button id="prev" type="button">Назад</button>
+  <div class="dots" id="dots" role="tablist"></div>
+  <span class="count" id="count"></span>
+  <button id="next" type="button">Дальше</button>
+</nav>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+  var dotsHost = document.getElementById("dots");
+  var count = document.getElementById("count");
+  var prev = document.getElementById("prev");
+  var next = document.getElementById("next");
+  var index = 0;
+
+  slides.forEach(function (_, i) {
+    var dot = document.createElement("button");
+    dot.className = "dot";
+    dot.type = "button";
+    dot.setAttribute("aria-label", "Слайд " + (i + 1));
+    dot.addEventListener("click", function () { go(i); });
+    dotsHost.appendChild(dot);
+  });
+  var dots = Array.prototype.slice.call(dotsHost.children);
+
+  function go(i) {
+    index = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach(function (slide, j) { slide.classList.toggle("active", j === index); });
+    dots.forEach(function (dot, j) { dot.classList.toggle("active", j === index); });
+    count.textContent = (index + 1) + " / " + slides.length;
+    prev.disabled = index === 0;
+    next.disabled = index === slides.length - 1;
+    var active = slides[index];
+    if (active) { active.scrollTop = 0; }
+  }
+  prev.addEventListener("click", function () { go(index - 1); });
+  next.addEventListener("click", function () { go(index + 1); });
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "ArrowLeft" || event.key === "PageUp") { event.preventDefault(); go(index - 1); }
+    if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") { event.preventDefault(); go(index + 1); }
+    if (event.key === "Home") { event.preventDefault(); go(0); }
+    if (event.key === "End") { event.preventDefault(); go(slides.length - 1); }
+  });
+  go(0);
+})();
+</script>
+</body>
+</html>

@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+import translator
 from main import process_items
 from scraper import SOURCE_NAMES
 from summarizer import llm_unavailable_message, normalize_engine, resolve_llm
@@ -134,7 +135,9 @@ with st.sidebar:
     sources = st.multiselect(
         "Подключённые источники",
         options=source_ids,
-        default=[sid for sid in cfg.get("sources", ["europepmc", "minzdrav"]) if sid in SOURCE_NAMES],
+        default=[
+            sid for sid in cfg.get("sources", ["europepmc", "openalex", "minzdrav"]) if sid in SOURCE_NAMES
+        ],
         format_func=lambda sid: SOURCE_NAMES[sid],
     )
     period = st.selectbox(
@@ -181,7 +184,9 @@ st.markdown(
 </div>""",
     unsafe_allow_html=True,
 )
-tab_search, tab_providers, tab_diagram = st.tabs(["Поиск", "Провайдеры", "Схема агентов"])
+tab_search, tab_providers, tab_diagram, tab_slides = st.tabs(
+    ["Поиск", "Провайдеры", "Схема агентов", "Презентация"]
+)
 
 with tab_search:
     if topics_error:
@@ -303,6 +308,38 @@ with tab_search:
                             else "**Резюме текста:**"
                         )
                         st.text(item.get("summary") or "Резюме отсутствует.")
+                        summary_text = (item.get("summary") or "").strip()
+                        if summary_text and method != "metadata_only":
+                            # Перевод — только по кнопке; текст уходит на внешний сервер (см. translator.py).
+                            target = "ru" if not translator.mostly_cyrillic(summary_text) else "en"
+                            direction = "на русский" if target == "ru" else "на английский"
+                            translation_key = f"tr:{item['identifier']}"
+                            translated = st.session_state.get(translation_key)
+                            if not translated and st.button(
+                                f"Перевести резюме {direction}", key=f"btn:{item['identifier']}"
+                            ):
+                                with st.spinner("Переводим резюме…"):
+                                    try:
+                                        translated = translator.translate_text(summary_text, target)
+                                    except Exception:
+                                        translated = None
+                                        st.warning(
+                                            "Не удалось перевести: сервис перевода недоступен. Оригинал показан выше."
+                                        )
+                                    else:
+                                        st.session_state[translation_key] = translated
+                            if translated and st.button("Скрыть перевод", key=f"hidetr:{item['identifier']}"):
+                                st.session_state[translation_key] = None
+                                translated = None
+                            if translated:
+                                st.info(translated)
+                                note = (
+                                    "Перевод выполнен внешним сервисом Google Translate (неофициальный endpoint); "
+                                    "текст резюме отправлен на серверы Google. Оригинал показан выше."
+                                )
+                                if len(summary_text) > translator.MAX_INPUT_CHARS:
+                                    note += " Переведены первые 2000 символов."
+                                st.caption(note)
                         st.caption("Метод: " + METHOD_LABELS.get(method, method))
                         if item.get("summary_notice"):
                             st.caption(item["summary_notice"])
@@ -371,3 +408,14 @@ with tab_diagram:
         components.html(diagram.read_text(encoding="utf-8"), height=920, scrolling=True)
     else:
         st.info("Схема diagr/agents.html не найдена.")
+
+with tab_slides:
+    st.caption(
+        "Материалы для выступления. Листайте стрелками влево/вправо или кнопками внизу слайда. "
+        "Презентация самодостаточна и не отправляет данные наружу."
+    )
+    deck = Path(__file__).parent / "diagr" / "presentation.html"
+    if deck.is_file():
+        components.html(deck.read_text(encoding="utf-8"), height=640, scrolling=False)
+    else:
+        st.info("Файл diagr/presentation.html не найден.")
