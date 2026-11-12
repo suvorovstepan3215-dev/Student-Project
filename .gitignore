@@ -1,0 +1,23 @@
+# Runtime state, virtual environments and local secrets (at any depth).
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+*.log.[0-9]*
+history.json
+history.json.lock
+*.tmp
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.DS_Store
+
+# Standalone kit virtual environments and generated archives.
+streamlit_web/.venv/
+local_pc/.venv/
+downloads/

@@ -9,16 +9,21 @@
     source, identifier, title, url, abstract, authors, published
 """
 
+from __future__ import annotations
+
 import logging
 import re
+import threading
 import time
-import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Dict, List, Optional
 
-import requests
+from defusedxml import ElementTree as ET
 
+from network import public_requests as requests
+from results import SearchResults, diagnostic
 from utils import resolve_date_range, token_is_exact, topic_tokens
+from validation import bounded_int, clean_topics
 
 logger = logging.getLogger("archiv_tracker.arxiv")
 
@@ -71,18 +76,22 @@ def build_query(topics: List[str], date_from: date, date_to: date) -> str:
 
 
 _last_request_at = 0.0
+_REQUEST_LOCK = threading.Lock()
 
 
 def _api_get(params: Dict) -> requests.Response:
     """Запрос к API с паузой: arXiv просит не чаще одного запроса в 3 секунды."""
     global _last_request_at
-    wait = 3.0 - (time.time() - _last_request_at)
-    if _last_request_at and wait > 0:
-        time.sleep(wait)
-    resp = requests.get(ARXIV_API_URL, params=params, timeout=30)
-    _last_request_at = time.time()
-    resp.raise_for_status()
-    return resp
+    with _REQUEST_LOCK:
+        wait = 3.0 - (time.monotonic() - _last_request_at)
+        if _last_request_at and wait > 0:
+            time.sleep(wait)
+        try:
+            resp = requests.get(ARXIV_API_URL, params=params, timeout=30)
+            resp.raise_for_status()
+            return resp
+        finally:
+            _last_request_at = time.monotonic()
 
 
 def _parse_entries(root: ET.Element) -> List[Dict]:
@@ -100,8 +109,7 @@ def _parse_entries(root: ET.Element) -> List[Dict]:
             {
                 "source": SOURCE_ID,
                 "identifier": f"arxiv:{arxiv_id}",
-                "title": _clean(entry.findtext("atom:title", default="", namespaces=_NS))
-                or "(без названия)",
+                "title": _clean(entry.findtext("atom:title", default="", namespaces=_NS)) or "(без названия)",
                 "url": abs_url.replace("http://", "https://"),
                 "abstract": _clean(entry.findtext("atom:summary", default="", namespaces=_NS)),
                 "authors": ", ".join(authors),
@@ -130,9 +138,7 @@ def _search(query: str, limit: int, sort_by: str) -> List[Dict]:
         )
         root = ET.fromstring(resp.content)
         if total is None:
-            raw_total = root.findtext(
-                "{http://a9.com/-/spec/opensearch/1.1/}totalResults", default="0"
-            )
+            raw_total = root.findtext("{http://a9.com/-/spec/opensearch/1.1/}totalResults", default="0")
             try:
                 total = int(raw_total)
             except ValueError:
@@ -159,7 +165,10 @@ def _in_window(value: str, date_from: date, date_to: date) -> bool:
 
 
 def _recently_updated(
-    text_query: str, date_from: date, date_to: date, limit: int,
+    text_query: str,
+    date_from: date,
+    date_to: date,
+    limit: int,
 ) -> List[Dict]:
     """Препринты, у которых в диапазон попала дата новой версии, а не первой отправки.
 
@@ -211,6 +220,8 @@ def fetch(
     В выборку входят и новые препринты, и новые версии уже известных работ,
     если дата отправки или дата обновления попадает в диапазон.
     """
+    topics = clean_topics(topics)
+    bounded_int(rows, "rows", 1, 100)
     date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
     text_query = build_text_query(topics)
     if not text_query:
@@ -221,11 +232,19 @@ def fetch(
     by_id: Dict[str, Dict] = {}
     for item in _search(query, rows, "submittedDate"):
         by_id[item["identifier"]] = item
+    notices = []
     try:
         for item in _recently_updated(text_query, date_from, date_to, max(rows, 100)):
             by_id.setdefault(item["identifier"], item)
     except Exception as exc:
-        logger.warning(f"arXiv: не удалось добрать обновлённые версии ({exc})")
+        logger.warning("arXiv: обновлённые версии не получены (%s).", type(exc).__name__)
+        notices.append(
+            diagnostic(
+                SOURCE_ID,
+                "updates_failed",
+                "arXiv: поиск обновлённых версий не удался; показаны только новые препринты.",
+            )
+        )
     items = sorted(
         by_id.values(),
         key=lambda it: it.get("updated") or it.get("published") or "",
@@ -236,4 +255,4 @@ def fetch(
         items = items[:rows]
     else:
         logger.info(f"📥 arXiv: отдано {len(items)}")
-    return items
+    return SearchResults(items, warnings=notices)

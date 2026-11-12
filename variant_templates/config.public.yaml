@@ -1,0 +1,45 @@
+# Настройки этой копии приложения. Файл читает только само приложение:
+# веб-гость и MCP-клиент не могут его изменить. Секретов здесь нет и быть не должно.
+
+# Темы по умолчанию: английская для Europe PMC, русская для каталога КР.
+topics:
+  - "diabetes"
+  - "сахарный диабет"
+
+# Два источника из задания. Остальные адаптеры доступны в интерфейсе и MCP.
+sources:
+  - "europepmc"
+  - "minzdrav"
+
+openalex:
+  mailto: ""   # Необязательно; можно задать OPENALEX_MAILTO в окружении.
+  api_key: ""  # Лучше через OPENALEX_API_KEY, не храните ключ в файле.
+europepmc:
+  email: ""    # Необязательно; можно задать EUROPEPMC_EMAIL.
+
+minzdrav:
+  # auto: сначала официальный API, при сбое — зеркало с видимым предупреждением.
+  # official: без запасного варианта. mirror: только сторонние метаданные.
+  mode: auto
+  base_url: "https://minzdrav.clinirec.ru"
+  cache_ttl_seconds: 900
+
+# Локальное экстрактивное резюме (Sumy LSA). Работает без интернета и без ключей.
+summarizer: sumy
+
+# Серверные пресеты LLM. В этой копии LLM выключена (ui.enable_llm: false),
+# поэтому пресеты никуда не отправляются.
+providers:
+  ollama:
+    base_url: "http://localhost:11434/v1"
+    model: "qwen2.5:7b"
+    allow_private: true
+  openai:
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-4o-mini"
+    api_key_env: "OPENAI_API_KEY"
+    allow_private: false
+
+ui:
+  # Публичный веб-интерфейс не должен давать анонимный доступ к платной LLM.
+  enable_llm: false

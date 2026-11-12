@@ -1,0 +1,147 @@
+# Вариант 1 — Streamlit (веб-интерфейс)
+
+Самостоятельная копия проекта: веб-интерфейс поиска публикаций + локальное
+резюме (Sumy LSA). MCP-сервер в эту копию **не входит** — он в варианте
+`local_pc`. Это учебный проект: не медицинская рекомендация и не проверка
+достоверности публикаций.
+
+Внутри уже есть всё нужное: код, `config.yaml`, схема агентов и шаблоны
+`setup`/`start` для Windows и Linux/macOS. Нужен только Python 3.11+ и интернет
+(для установки пакетов и для самих поисковых запросов).
+
+## 1. Проверка Python
+
+Windows (PowerShell), в папке `streamlit_web`:
+
+```powershell
+py -3.11 --version
+```
+
+Linux/macOS, в папке `streamlit_web`:
+
+```sh
+python3 --version
+```
+
+Если версия ниже 3.11 — поставьте Python 3.11 или 3.12 и повторите.
+
+## 2. Установка (один раз)
+
+Windows PowerShell:
+
+```powershell
+cd путь\к\streamlit_web
+.\setup.ps1
+```
+
+Если PowerShell блокирует скрипты:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+Linux/macOS:
+
+```sh
+cd путь/к/streamlit_web
+sh setup.sh
+# если python3 указывает на старую версию:
+# PYTHON=python3.11 sh setup.sh
+```
+
+`setup` создаёт `.venv` **внутри этой папки**, ставит точные версии из
+`requirements.txt`, проверяет зависимости и запускает офлайн-проверку.
+Успешный финал: `OK: standalone Streamlit UI, default sources, actual EN/RU LSA.`
+и `No external API requests were made.`
+
+Проверка без повторной установки:
+
+```powershell
+.\.venv\Scripts\python.exe check_setup.py
+```
+
+```sh
+.venv/bin/python check_setup.py
+```
+
+## 3. Запуск
+
+Windows:
+
+```powershell
+.\start.ps1
+```
+
+Linux/macOS:
+
+```sh
+sh start.sh
+```
+
+Откройте <http://127.0.0.1:8501>. Останов: `Ctrl+C`.
+
+Порт занят или нужен другой:
+
+```powershell
+.\start.ps1 --server.port 8502
+```
+
+```sh
+sh start.sh --server.port 8502
+```
+
+## 4. Первый сценарий в браузере
+
+1. Вкладка **Поиск**: темы `diabetes` и `сахарный диабет`, источники
+   Europe PMC и Рубрикатор КР, диапазон **Произвольный**: `01.01.2020` —
+   сегодня.
+2. «Записей с каждого источника» — 5–20, «Запустить поиск сейчас».
+3. Смотрите блоки ошибок/предупреждений: ошибка источника ≠ «ничего не найдено».
+   Карточки Минздрава — только метаданные каталога, не текст КР.
+
+Интернет нужен для самих источников. Резюме строится локально.
+
+## 5. Публикация в Streamlit Community Cloud (бесплатный хостинг)
+
+Важно: Streamlit Cloud собирает приложение **из GitHub-репозитория**, а не из
+ZIP на компьютере. Загрузите папку `streamlit_web` в свой репозиторий
+(например, отдельным репозиторием, где `streamlit_app.py` и
+`requirements.txt` лежат в корне), затем:
+
+1. <https://share.streamlit.io> → **Create app** → **Deploy a public app from GitHub**.
+2. Repository: ваш репозиторий; Branch: `main`; **Main file path**:
+   `streamlit_app.py` (или `streamlit_web/streamlit_app.py`, если папка лежит
+   внутри общего репозитория); Python 3.11.
+3. Deploy. URL вида `https://имя.streamlit.app` — это **только веб-страница**,
+   не MCP-сервер.
+
+Команды для загрузки в GitHub (из папки `streamlit_web`, пустой новый
+репозиторий на github.com):
+
+```sh
+git init
+git add .
+git commit -m "Streamlit kit"
+git branch -M main
+git remote add origin https://github.com/ВАШ_ЛОГИН/ИМЯ_РЕПОЗИТОРИЯ.git
+git push -u origin main
+```
+
+Если git ещё не установлен — поставьте его с <https://git-scm.com/downloads>.
+Перед `commit` полезно выполнить `git status`: `.venv`, логи, `history.json`
+и `atomic-chat.json` уже исключены через `.gitignore`.
+
+Публичный деплой = чужой сервер: `http://localhost:...` там **не ваш
+компьютер**, локальная Ollama недоступна, LLM в этой копии выключена. Не
+добавляйте ключи в репозиторий; секреты — только через Settings → Secrets
+хостинга, и только если действительно включаете LLM.
+
+## 6. Что проверено и что нет
+
+- Проверено офлайн: импорт именно этой копии, рендер страницы, источники по
+  умолчанию, EN/RU LSA, отсутствие полей для ключей.
+- Не проверялось здесь: живой запрос к Europe PMC/Минздраву из этой копии,
+  реальный деплой в Streamlit Cloud (нужен ваш GitHub-аккаунт).
+
+Документация полного проекта: `README.md` и `USAGE.md` в исходном
+репозитории.

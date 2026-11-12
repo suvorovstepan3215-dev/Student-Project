@@ -1,0 +1,12 @@
+# Standalone kit built from the coursework tracker (Python 3.11+).
+# Exact pins: reproducible install and no dependency resolver surprises.
+requests==2.34.2
+beautifulsoup4==4.15.0
+pyyaml==6.0.3
+sumy==0.11.0
+nltk==3.10.4
+numpy==2.4.6
+filelock==4.2.10
+defusedxml==0.7.1
+urllib3==2.8.0
+mcp==2.3.0

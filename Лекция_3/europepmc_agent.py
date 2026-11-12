@@ -24,10 +24,12 @@ import re
 import time
 from datetime import date
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
-import requests
-
+from network import public_requests as requests
+from results import SearchResults, SourceUnavailable, diagnostic
 from utils import load_config, resolve_date_range
+from validation import bounded_int, clean_topics
 
 logger = logging.getLogger("archiv_tracker.europepmc")
 
@@ -82,10 +84,7 @@ def build_query(topics: List[str], date_from: date, date_to: date) -> str:
     text_query = build_text_query(topics)
     if not text_query:
         return ""
-    return (
-        f"{text_query} AND "
-        f"FIRST_PDATE:[{date_from.isoformat()} TO {date_to.isoformat()}]"
-    )
+    return f"{text_query} AND FIRST_PDATE:[{date_from.isoformat()} TO {date_to.isoformat()}]"
 
 
 def _published(record: Dict) -> str:
@@ -117,8 +116,8 @@ def _article_url(record: Dict) -> str:
     """Ссылка на запись в Europe PMC.
 
     Сначала страница статьи по PMCID, затем карточка PubMed по PMID,
-    затем DOI. Страница Europe PMC открыта и читается оркестратором,
-    если аннотации в метаданных не хватило для резюме.
+    затем source/id (препринты, патенты), затем DOI.
+    Аннотация используется для резюме независимо от её длины.
     """
     pmcid = _clean(record.get("pmcid"))
     pmid = _clean(record.get("pmid"))
@@ -126,17 +125,20 @@ def _article_url(record: Dict) -> str:
         return f"https://europepmc.org/articles/{pmcid}"
     if pmid:
         return f"https://europepmc.org/article/MED/{pmid}"
+    source, record_id = _clean(record.get("source")), _clean(record.get("id"))
+    if source and record_id:
+        return f"https://europepmc.org/article/{quote(source, safe='')}/{quote(record_id, safe='')}"
     doi = _clean(record.get("doi"))
-    if doi:
-        return f"https://doi.org/{doi}"
-    return ""
+    return f"https://doi.org/{quote(doi, safe='/')}" if doi else ""
 
 
 def _to_item(record: Dict) -> Dict:
     """Привести ответ Europe PMC к общему формату записи трекера."""
     pmcid = _clean(record.get("pmcid"))
     pmid = _clean(record.get("pmid"))
-    short_id = pmcid or pmid or _clean(record.get("id"))
+    short_id = pmcid or pmid
+    if not short_id and record.get("id"):
+        short_id = f"{_clean(record.get('source'))}:{_clean(record['id'])}"
     try:
         cited = int(record.get("citedByCount") or 0)
     except (TypeError, ValueError):
@@ -192,19 +194,19 @@ def _api_get(params: Dict) -> Dict:
         )
         if resp.status_code == 429 or resp.status_code >= 500:
             wait = 2.0 * (attempt + 1)
-            logger.warning(
-                f"⚠️ Europe PMC: HTTP {resp.status_code} {_error_message(resp)} – "
-                f"повтор через {wait:.0f} с"
-            )
+            logger.warning(f"⚠️ Europe PMC: HTTP {resp.status_code} – повтор через {wait:.0f} с")
             if attempt == 2:
                 break
             time.sleep(wait)
             continue
         if resp.status_code >= 400:
-            logger.error(f"❗ Europe PMC: HTTP {resp.status_code} {_error_message(resp)}")
+            logger.error(f"❗ Europe PMC: HTTP {resp.status_code}")
         resp.raise_for_status()
-        return resp.json()
-    raise RuntimeError("Europe PMC не ответил после трёх попыток")
+        data = resp.json()
+        if not isinstance(data, dict) or not isinstance((data.get("resultList") or {}).get("result"), list):
+            raise SourceUnavailable("Изменился формат ответа Europe PMC.")
+        return data
+    raise SourceUnavailable("Europe PMC не ответил после трёх попыток")
 
 
 def fetch(
@@ -212,36 +214,61 @@ def fetch(
     rows: int = 20,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-) -> List[Dict]:
-    """Получить работы Europe PMC по темам и диапазону дат.
+) -> SearchResults:
+    """Newest matches globally: sort_date:y is sent to the API, not just applied locally.
 
-    Europe PMC не гарантирует сортировку по дате, поэтому записи сортируются
-    по убыванию ``published`` на стороне агента, как у Habr. Записи без даты
-    отбрасываются: их нельзя отнести к диапазону.
+    Cursor traversal is bounded and fills gaps left by malformed records. A
+    partial response is reported instead of masquerading as a complete search.
     """
+    topics = clean_topics(topics)
+    bounded_int(rows, "rows", 1, 100)
     date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
-    query = build_query(topics, date_from, date_to)
-    if not query:
-        logger.warning("Темы для Europe PMC пустые – поиск не выполняется.")
-        return []
-    limit = max(1, min(int(rows or 20), PAGE_SIZE_MAX))
-    params = {
-        "query": query,
-        "format": "json",
-        "resultType": "core",
-        "pageSize": limit,
-    }
+    query = build_query(topics, date_from, date_to) + " sort_date:y"
+    params = {"query": query, "format": "json", "resultType": "core", "pageSize": rows}
     params.update(_client_params())
-    logger.info(f"🌐 Запрос к Europe PMC: {query} (до {limit} работ)")
-    data = _api_get(params)
-    logger.info(f"📥 Europe PMC: всего совпадений {data.get('hitCount', '?')}")
-    records = (data.get("resultList") or {}).get("result") or []
-    items = [_to_item(record) for record in records]
-    items = [item for item in items if item["url"] and item["published"]]
-    items.sort(key=lambda item: item["published"], reverse=True)
-    items = items[:limit]
-    logger.info(f"📥 Europe PMC: отдано {len(items)}")
-    return items
+    result = SearchResults()
+    cursor, cursors, identifiers = "*", set(), set()
+    for _ in range(5):
+        if not cursor or cursor in cursors or len(result) >= rows:
+            break
+        cursors.add(cursor)
+        try:
+            data = _api_get(dict(params, cursorMark=cursor))
+        except Exception:
+            if not result:
+                raise
+            result.errors.append(
+                diagnostic(
+                    SOURCE_ID,
+                    "page_failed",
+                    "Не удалось прочитать следующую страницу Europe PMC; результаты неполные.",
+                )
+            )
+            break
+        records = (data.get("resultList") or {}).get("result") or []
+        for record in records:
+            try:
+                item = _to_item(record)
+                if not item["url"] or not item["published"] or item["identifier"] == SOURCE_ID:
+                    raise ValueError("Incomplete record")
+                if item["identifier"] not in identifiers:
+                    result.append(item)
+                    identifiers.add(item["identifier"])
+            except (ValueError, TypeError, AttributeError):
+                result.warnings.append(
+                    diagnostic(
+                        SOURCE_ID, "invalid_record", "Europe PMC: запись с неполными метаданными пропущена."
+                    )
+                )
+        cursor = data.get("nextCursorMark") if records else None
+    else:
+        if cursor and len(result) < rows:
+            result.warnings.append(
+                diagnostic(SOURCE_ID, "page_limit", "Europe PMC: достигнут предел обхода страниц.")
+            )
+    result.sort(key=lambda item: item["published"], reverse=True)
+    del result[rows:]
+    return result
 
 
 if __name__ == "__main__":

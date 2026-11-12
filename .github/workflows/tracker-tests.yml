@@ -1,0 +1,45 @@
+name: Publication tracker checks
+
+on:
+  push:
+    paths:
+      - 'Лекция_3/**'
+      - 'streamlit_web/**'
+      - 'local_pc/**'
+      - 'tools/**'
+      - 'variant_templates/**'
+      - '.github/workflows/tracker-tests.yml'
+  pull_request:
+    paths:
+      - 'Лекция_3/**'
+      - 'streamlit_web/**'
+      - 'local_pc/**'
+      - 'tools/**'
+      - 'variant_templates/**'
+      - '.github/workflows/tracker-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    defaults:
+      run:
+        working-directory: Лекция_3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: Лекция_3/requirements*.txt
+      - run: python -m pip install --upgrade pip setuptools
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pip check
+      - run: pip-audit --local --vulnerability-service pypi --progress-spinner off
+      - run: ruff check .
+      - run: python -m pytest -q

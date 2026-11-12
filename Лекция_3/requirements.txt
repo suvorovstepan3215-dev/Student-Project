@@ -1,9 +1,18 @@
-# requirements.txt
-requests==2.32.3
-beautifulsoup4==4.12.3
-pyyaml==6.0.2
+# Tested on Python 3.11. MCP server/client use the 2.x SDK API.
+requests==2.34.2
+beautifulsoup4==4.15.0
+pyyaml==6.0.3
 sumy==0.11.0
-apscheduler==3.10.4
-streamlit==1.38.0
-pandas>=2.0
-mcp>=1.9
+nltk==3.10.4
+# Required by actual LSA, including the MCP-only distribution without Streamlit.
+numpy==2.4.6
+apscheduler==3.11.3
+streamlit==1.67.0
+pandas==2.3.3
+# Streamlit's transitive image dependency: avoid vulnerable older installed versions.
+pillow==13.0.0
+mcp==2.3.0
+filelock==4.2.10
+# Direct use: safe XML parsing and pinned DNS-aware HTTP pool implementation.
+defusedxml==0.7.1
+urllib3==2.8.0

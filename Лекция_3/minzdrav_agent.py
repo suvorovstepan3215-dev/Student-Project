@@ -1,293 +1,514 @@
-# minzdrav_agent.py
-"""Агент-источник: Рубрикатор клинических рекомендаций Минздрава России.
+"""Clinical recommendation catalogue: official API first, explicit mirror fallback.
 
-Официальный рубрикатор — https://cr.minzdrav.gov.ru/ — публикуется как
-одобренный Научно-практическим советом Минздрава РФ каталог клинических
-рекомендаций (КР). Публичного поискового API у него нет, сайт защищён от
-автоматического обхода, поэтому агент работает с открытым зеркалом каталога
-minzdrav.clinirec.ru, которое дублирует те же карточки КР.
-
-Рубрикатор — это не лента новостей, а справочник: у каждой КР есть
-идентификатор, версия, год пересмотра, коды МКБ-10, возрастная категория и
-разработчик. Поэтому агент строит каталог из страниц классов МКБ-10
-(https://minzdrav.clinirec.ru/mkb-10/<класс>/), где перечислены все КР
-класса с компактными метаданными, и фильтрует его по теме (название
-заболевания, синоним или код МКБ-10). Полный текст PDF выдаёт Telegram-бот,
-поэтому в поле pdf_hint лежит подсказка, как его получить.
-
-Поскольку это каталог, а не еженедельная лента, фильтр по дате здесь —
-по году пересмотра: остаются КР, пересмотренные в пределах
-[date_from.year, date_to.year]. Для поиска конкретной КР обычно имеет
-смысл расширить диапазон дат (в интерфейсе — «Произвольный» на несколько
-лет), иначе при узком окне «неделя» вернутся только свежие пересмотры.
-
-Возвращает единый формат записи, общий для всех источников:
-    source, identifier, title, url, abstract, authors, published
-и добавляет icd_codes, age_category, revision_year, developer, status, pdf_hint.
+API schema: GetJsonClinrecsFilterV2 (Data / TotalRecords / CodeVersion).
+The mirror is THIRD-PARTY metadata, not a verified copy or a full guideline.
+No PDF/bot/download link is executed. Publication dates from the API and
+revision YEARS from the mirror retain their original precision.
 """
 
 import logging
 import re
-from datetime import date
-from typing import Dict, List, Optional
+import threading
+import time
+from collections import deque
+from datetime import date, datetime, timezone
+from typing import Optional
+from urllib.parse import urljoin, urlsplit
 
-import requests
 from bs4 import BeautifulSoup
 
+from network import public_requests as requests
+from results import SearchResults, SourceUnavailable, diagnostic
+from security import normalize_url, same_origin
 from utils import load_config, resolve_date_range
+from validation import bounded_int, clean_topics
+from validator import _find_topic
 
 logger = logging.getLogger("archiv_tracker.minzdrav")
-
 SOURCE_ID = "minzdrav"
-SOURCE_NAME = "Рубрикатор КР Минздрава РФ"
-
-# Зеркало рубрикатора: открытый сайт, дублирующий карточки КР Минздрава.
-# Адрес можно переопределить в config.yaml (блок minzdrav.base_url).
+SOURCE_NAME = "Рубрикатор КР Минздрава РФ (каталог)"
+OFFICIAL_API_URL = "https://apicr.minzdrav.gov.ru/api.ashx"
 DEFAULT_BASE_URL = "https://minzdrav.clinirec.ru"
-
-# Классы МКБ-10, по которым рубрикатор группирует КР (римские номера страниц).
-# Класс XX (внешние причины) в навигации сайта пропущен, но страница существует —
-# агент молча пропустит 404.
 CLASS_SLUGS = [
-    "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x",
-    "xi", "xii", "xiii", "xiv", "xv", "xvi", "xvii", "xviii", "xix", "xx", "xxi",
+    "i",
+    "ii",
+    "iii",
+    "iv",
+    "v",
+    "vi",
+    "vii",
+    "viii",
+    "ix",
+    "x",
+    "xi",
+    "xii",
+    "xiii",
+    "xiv",
+    "xv",
+    "xvi",
+    "xvii",
+    "xviii",
+    "xix",
+    "xx",
+    "xxi",
 ]
-
-# Значения HTTP-заголовков кодируются latin-1, поэтому здесь только ASCII.
-USER_AGENT = "Mozilla/5.0 (compatible; multi-agent-tracker/1.0; educational project)"
-HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
-}
-
-# Возрастные категории КР. Порядок важен: составные — раньше простых.
-AGE_CATEGORIES = (
-    "Взрослые, дети", "Взрослые", "Дети",
-    "Грудные", "Новорожденные", "Беременные",
-)
-
-# Пауза между запросами страниц классов: не частим к чужому сайту.
+USER_AGENT = "multi-agent-publication-tracker/1.1 (educational metadata search)"
+HEADERS = {"User-Agent": USER_AGENT, "Accept": "text/html,application/json"}
+AGE_CATEGORIES = ("Взрослые, дети", "Взрослые", "Дети", "Грудные", "Новорожденные", "Беременные")
 REQUEST_PAUSE_SECONDS = 0.5
+MAX_CATALOG_SECONDS = 90
+MAX_MIRROR_PAGES = 80
+MAX_OFFICIAL_PAGES = 20
+OFFICIAL_PAGE_SIZE = 200
+_YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+_CODE_RE = re.compile(r"[A-Z]\d{2}(?:\.[A-Z0-9]{1,4})?(?:\s*[-–]\s*[A-Z]?\d{2}(?:\.[A-Z0-9]{1,4})?)?")
+_CATALOG_CACHE = {}
+_CATALOG_LOCK = threading.Lock()
 
-_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
-_CODES_RE = re.compile(r"\s*([A-Z0-9][A-Z0-9.,\s]*)")
 
-# Кэш каталога между вызовами fetch в рамках одного процесса.
-_CATALOG_CACHE: Optional[Dict[str, Dict]] = None
+class Catalog(dict):
+    def __init__(self, *args, errors=(), warnings=(), complete=True, backend="mirror", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.errors = list(errors)
+        self.warnings = list(warnings)
+        self.complete = complete
+        self.backend = backend
+
+
+def _settings() -> dict:
+    cfg = load_config().get("minzdrav") or {}
+    mode = cfg.get("mode", "auto")
+    if mode not in {"auto", "official", "mirror"}:
+        raise ValueError("minzdrav.mode: допустимы auto, official, mirror.")
+    ttl = bounded_int(cfg.get("cache_ttl_seconds", 900), "cache_ttl_seconds", 0, 3600)
+    base = normalize_url(str(cfg.get("base_url") or DEFAULT_BASE_URL)).rstrip("/")
+    if urlsplit(base).query or urlsplit(base).path:
+        raise ValueError("minzdrav.base_url должен содержать только схему и имя узла.")
+    return {"mode": mode, "base_url": base, "ttl": ttl}
 
 
 def _base_url() -> str:
-    """Базовый адрес рубрикатора из config.yaml или по умолчанию."""
-    cfg = load_config().get("minzdrav") or {}
-    base = str(cfg.get("base_url") or DEFAULT_BASE_URL).strip()
-    if not base:
-        base = DEFAULT_BASE_URL
-    return base.rstrip("/")
+    return _settings()["base_url"]
 
 
-def _http_get(url: str) -> str:
-    """Загрузить HTML страницы; при ошибке — пустая строка (страница пропускается)."""
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.raise_for_status()
-        return resp.content.decode("utf-8", errors="replace")
-    except Exception as exc:
-        logger.warning(f"⚠️ Минздрав: не удалось загрузить {url} ({exc})")
-        return ""
+def _http_get(url: str, timeout: float = 15) -> str:
+    response = requests.get(url, headers=HEADERS, timeout=timeout)
+    response.raise_for_status()
+    return response.content.decode("utf-8", errors="replace")
 
 
-def _class_page_urls() -> List[str]:
-    """Абсолютные URL страниц всех классов МКБ-10."""
-    base = _base_url()
-    return [f"{base}/mkb-10/{slug}/" for slug in CLASS_SLUGS]
+def _class_page_urls(base: Optional[str] = None) -> list[str]:
+    return [f"{base or _base_url()}/mkb-10/{slug}/" for slug in CLASS_SLUGS]
 
 
-def _abs_url(href: str) -> str:
-    """Сделать ссылку абсолютной относительно базы рубрикатора."""
-    if not href:
-        return ""
-    if href.startswith("http://") or href.startswith("https://"):
-        return href
-    return _base_url() + (href if href.startswith("/") else "/" + href)
+def _abs_url(href: str, base: Optional[str] = None) -> str:
+    base = base or _base_url()
+    target = normalize_url(urljoin(base + "/", href))
+    if not same_origin(base, target):
+        raise ValueError("Внешняя ссылка в каталоге КР пропущена.")
+    return target
 
 
-def _parse_entry(text: str, href: str, slug: str) -> Optional[Dict]:
-    """Разобрать текст ссылки КР: «Название МКБ-10: КОДЫ ВОЗРАСТ ГОД»."""
+def _parse_entry(text: str, href: str, slug: str, base: Optional[str] = None) -> Optional[dict]:
     if "МКБ-10:" not in text:
         return None
     title, _, meta = text.partition("МКБ-10:")
-    title = title.strip()
-    if not title:
+    if not title.strip():
         return None
-
-    codes = ""
-    m = _CODES_RE.match(meta)
-    if m:
-        codes = m.group(1).strip(" ,")
-
-    year_match = _YEAR_RE.search(meta)
-    year = int(year_match.group(0)) if year_match else None
-
-    age = ""
-    for token in AGE_CATEGORIES:
-        if token in meta:
-            age = token
-            break
-
+    years = _YEAR_RE.findall(meta)
     return {
         "slug": slug,
-        "title": title,
-        "codes": codes,
-        "age": age,
-        "year": year,
-        "url": _abs_url(href),
+        "title": title.strip(),
+        "codes": ", ".join(dict.fromkeys(_CODE_RE.findall(meta))),
+        "age": next((age for age in AGE_CATEGORIES if age.casefold() in meta.casefold()), ""),
+        "year": int(years[-1]) if years else None,
+        "url": _abs_url(href, base),
+        "backend": "mirror",
+        "published": years[-1] if years else "",
+        "date_precision": "year" if years else "unknown",
     }
 
 
-def _parse_class_page(html: str) -> List[Dict]:
-    """Извлечь записи КР со страницы класса МКБ-10 (по ссылкам /kr/)."""
-    if not html:
-        return []
+def _parse_class_page(html: str, base: Optional[str] = None) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
-    entries: List[Dict] = []
-    seen = set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if "/kr/" not in href:
+    entries, seen = [], set()
+    for anchor in soup.find_all("a", href=True):
+        path = urlsplit(anchor["href"]).path
+        match = re.fullmatch(r"/kr/([^/]+)/?", path)
+        if not match or match[1] in seen:
             continue
-        slug = href.strip("/").split("/kr/")[-1].strip("/").rstrip("/")
-        if not slug or slug in seen:
+        try:
+            entry = _parse_entry(anchor.get_text(" ", strip=True), anchor["href"], match[1], base)
+        except ValueError:
             continue
-        text = a.get_text(" ").strip()
-        entry = _parse_entry(text, href, slug)
         if entry:
-            seen.add(slug)
+            seen.add(match[1])
             entries.append(entry)
     return entries
 
 
-def build_catalog(pages: Optional[Dict[str, str]] = None) -> Dict[str, Dict]:
-    """Построить каталог КР: slug → запись.
+def _pagination_links(html: str, current: str, base: str) -> list[str]:
+    """Follow only same-origin catalogue pagination, never arbitrary page links."""
+    links = []
+    for anchor in BeautifulSoup(html, "html.parser").find_all("a", href=True):
+        try:
+            target = _abs_url(urljoin(current, anchor["href"]), base)
+        except ValueError:
+            continue
+        if (
+            re.fullmatch(r"/mkb-10/[ivx]+/(?:page-\d+/?)?", urlsplit(target).path)
+            and not urlsplit(target).query
+        ):
+            links.append(target)
+    return list(dict.fromkeys(links))
 
-    ``pages`` — необязательный словарь {url: html} для офлайн-тестов; если не
-    задан, страницы классов загружаются по сети. Записи с одинаковым slug из
-    разных классов склеиваются (оставляем первую встреченную).
+
+def build_catalog(pages: Optional[dict[str, str]] = None, *, base: Optional[str] = None) -> Catalog:
+    """Mirror catalogue with pagination, bounded traversal, pacing and diagnostics.
+
+    pages is an explicit offline snapshot; it never populates the runtime cache.
+    Empty/partial network snapshots are never cached as a successful catalogue.
     """
-    if pages is None:
-        pages = {url: _http_get(url) for url in _class_page_urls()}
-    catalog: Dict[str, Dict] = {}
-    for html in pages.values():
-        for entry in _parse_class_page(html):
-            catalog.setdefault(entry["slug"], entry)
-    logger.info(f"📚 Минздрав: в каталоге {len(catalog)} клинических рекомендаций")
+    base = base or _base_url()
+    catalog = Catalog(backend="mirror")
+    if pages is not None:
+        for html in pages.values():
+            for entry in _parse_class_page(html, base):
+                catalog.setdefault(entry["slug"], entry)
+        return catalog
+    queue = deque(_class_page_urls(base))
+    visited = set()
+    deadline = time.monotonic() + MAX_CATALOG_SECONDS
+    consecutive_errors = 0
+    while queue:
+        if len(visited) >= MAX_MIRROR_PAGES or time.monotonic() >= deadline:
+            catalog.complete = False
+            catalog.warnings.append(
+                diagnostic(
+                    SOURCE_ID,
+                    "catalog_limit",
+                    "Обход зеркала ограничен по времени/числу страниц; результаты неполные.",
+                )
+            )
+            break
+        url = queue.popleft()
+        if url in visited:
+            continue
+        if visited:
+            time.sleep(REQUEST_PAUSE_SECONDS)
+        visited.add(url)
+        try:
+            html = _http_get(url, timeout=max(0.1, min(12, deadline - time.monotonic())))
+            entries = _parse_class_page(html, base)
+            if not entries:
+                # A login/anti-bot/template change is not a valid empty search.
+                raise SourceUnavailable("Не найдены карточки на странице класса.")
+            for entry in entries:
+                catalog.setdefault(entry["slug"], entry)
+            for target in _pagination_links(html, url, base):
+                if target not in visited and target not in queue:
+                    queue.append(target)
+            consecutive_errors = 0
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            if response is not None and response.status_code == 404 and url.endswith("/mkb-10/xx/"):
+                continue  # The mirror omits class XX on some versions.
+            catalog.complete = False
+            catalog.errors.append(
+                diagnostic(
+                    SOURCE_ID,
+                    "mirror_page_failed",
+                    f"Не удалось прочитать страницу каталога {urlsplit(url).path}; данные неполные.",
+                )
+            )
+            consecutive_errors += 1
+            logger.warning("Страница зеркала не прочитана (%s).", type(exc).__name__)
+            if consecutive_errors >= 3:
+                catalog.warnings.append(
+                    diagnostic(
+                        SOURCE_ID,
+                        "mirror_unavailable",
+                        "Обход остановлен после трёх последовательных ошибок. Повторите поиск позже.",
+                    )
+                )
+                break
+    if not catalog:
+        catalog.complete = False
+        if not catalog.errors:
+            catalog.errors.append(
+                diagnostic(SOURCE_ID, "empty_catalog", "Зеркало не вернуло распознаваемый каталог.")
+            )
     return catalog
 
 
-def get_catalog(force: bool = False, pages: Optional[Dict[str, str]] = None) -> Dict[str, Dict]:
-    """Каталог с простым кэшем в рамках процесса."""
-    global _CATALOG_CACHE
-    if _CATALOG_CACHE is None or force or pages is not None:
-        _CATALOG_CACHE = build_catalog(pages=pages)
-    return _CATALOG_CACHE
+def _official_date(value) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    for pattern in ("%d.%m.%Y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(value[:10], pattern).date().isoformat()
+        except ValueError:
+            continue
+    match = re.fullmatch(r"/Date\((-?\d+)(?:[+-]\d{4})?\)/", value)
+    if match:
+        try:
+            return datetime.fromtimestamp(int(match[1]) / 1000, timezone.utc).date().isoformat()
+        except (ValueError, OverflowError, OSError):
+            pass
+    return ""
+
+
+def _official_entry(record: dict) -> Optional[dict]:
+    code = str(record.get("CodeVersion") or "")
+    title = str(record.get("Name") or "").strip()
+    if not re.fullmatch(r"\d+_\d+", code) or not title:
+        return None  # Never fabricate an official identifier from a mirror slug.
+    published = _official_date(record.get("PublishDateStr") or record.get("PublishDate"))
+    codes = record.get("Mkbs") or []
+    codes = (
+        [str(item.get("MkbCode") or "") for item in codes if isinstance(item, dict)]
+        if isinstance(codes, list)
+        else []
+    )
+    return {
+        "slug": code,
+        "official_id": code,
+        "title": title,
+        "codes": ", ".join(code for code in codes if code),
+        "age": str(record.get("AgeCategoryStr") or ""),
+        "published": published,
+        "year": int(published[:4]) if published else None,
+        "date_precision": "day" if published else "unknown",
+        "backend": "official_api",
+        "url": f"https://cr.minzdrav.gov.ru/view-cr/{code}",
+        "registry_status": record.get("Status"),
+        "version": str(record.get("Version") or ""),
+    }
+
+
+def _official_catalog() -> Catalog:
+    catalog = Catalog(backend="official_api")
+    deadline = time.monotonic() + MAX_CATALOG_SECONDS
+    for page in range(1, MAX_OFFICIAL_PAGES + 1):
+        if page > 1:
+            time.sleep(REQUEST_PAUSE_SECONDS)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SourceUnavailable("Превышено время чтения официального каталога.")
+        response = requests.post(
+            OFFICIAL_API_URL,
+            params={"op": "GetJsonClinrecsFilterV2"},
+            headers=HEADERS,
+            json={
+                "filters": [
+                    {
+                        "fieldName": "status",
+                        "filterType": 1,
+                        "filterValueType": 2,
+                        "value1": 0,
+                        "value2": "",
+                        "values": [],
+                    }
+                ],
+                "sortOption": {"fieldName": "publishdate", "sortType": 2},
+                "pageSize": OFFICIAL_PAGE_SIZE,
+                "currentPage": page,
+                "useANDoperator": True,
+                "columns": [],
+            },
+            timeout=min(12, remaining),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("Data"), list):
+            raise SourceUnavailable("Изменился формат официального каталога.")
+        records = payload["Data"]
+        added = 0
+        for record in records:
+            entry = _official_entry(record) if isinstance(record, dict) else None
+            if entry is None:
+                catalog.complete = False
+                continue
+            if entry["slug"] not in catalog:
+                catalog[entry["slug"]] = entry
+                added += 1
+        total = payload.get("TotalRecords")
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            raise SourceUnavailable("Официальный API не сообщил корректный размер каталога.")
+        if len(catalog) >= total and total > 0:
+            if not catalog.complete:
+                catalog.warnings.append(
+                    diagnostic(
+                        SOURCE_ID, "invalid_record", "Часть записей официального каталога не распознана."
+                    )
+                )
+            return catalog
+        if not records or not added:
+            break
+    catalog.complete = False
+    if not catalog:
+        raise SourceUnavailable("Официальный API вернул пустой или нераспознанный каталог.")
+    catalog.warnings.append(
+        diagnostic(
+            SOURCE_ID,
+            "official_catalog_incomplete",
+            "Официальный каталог прочитан не полностью: достигнут лимит или часть записей не распознана.",
+        )
+    )
+    return catalog
+
+
+def get_catalog(force: bool = False, pages: Optional[dict[str, str]] = None) -> Catalog:
+    settings = _settings()
+    if pages is not None:
+        return build_catalog(pages, base=settings["base_url"])
+    key = (settings["mode"], settings["base_url"])
+    with _CATALOG_LOCK:
+        cached = _CATALOG_CACHE.get(key)
+        if cached and not force and time.monotonic() < cached[0]:
+            return cached[1]
+        if settings["mode"] == "mirror":
+            catalog = build_catalog(base=settings["base_url"])
+        else:
+            try:
+                catalog = _official_catalog()
+            except Exception as exc:
+                logger.warning("Официальный каталог недоступен (%s).", type(exc).__name__)
+                if settings["mode"] == "official":
+                    raise SourceUnavailable(
+                        "Официальный API Минздрава недоступен. Пустой результат не означает отсутствие КР."
+                    ) from exc
+                catalog = build_catalog(base=settings["base_url"])
+                catalog.warnings.insert(
+                    0,
+                    diagnostic(
+                        SOURCE_ID,
+                        "official_unavailable",
+                        "Официальный API недоступен: использованы только метаданные стороннего зеркала. Актуальность и соответствие официальным КР не проверены.",
+                    ),
+                )
+        if catalog and catalog.complete and settings["ttl"]:
+            ttl = (
+                min(settings["ttl"], 30)
+                if any(w["code"] == "official_unavailable" for w in catalog.warnings)
+                else settings["ttl"]
+            )
+            _CATALOG_CACHE[key] = (time.monotonic() + ttl, catalog)
+            # Bounded cache even if a local administrator frequently changes URLs.
+            while len(_CATALOG_CACHE) > 8:
+                _CATALOG_CACHE.pop(next(iter(_CATALOG_CACHE)))
+        else:
+            _CATALOG_CACHE.pop(key, None)
+        return catalog
 
 
 def _topic_matches(text: str, topic: str) -> bool:
-    """Тема есть в тексте: все слова темы (длиной >1) встречаются как подстроки.
-
-    Для русского и латинских кодов МКБ-10 подстроковое совпадение достаточно:
-    «астма» находит «Бронхиальная астма», «J45» — в списке кодов.
-    """
-    text = text.lower()
-    tokens = [t for t in topic.lower().split() if len(t) > 1]
-    if not tokens:
-        return topic.lower() in text
-    return all(token in text for token in tokens)
+    return _find_topic(text, [topic]) is not None
 
 
-def _to_item(entry: Dict) -> Dict:
-    """Привести запись каталога к общему формату записи трекера."""
-    year = entry["year"]
-    published = f"{year}-01-01" if year else ""
-    codes = entry["codes"]
-    age = entry["age"]
-    abstract = f"Клиническая рекомендация Минздрава РФ: {entry['title']}."
-    if codes:
-        abstract += f" МКБ-10: {codes}."
-    if age:
-        abstract += f" Возраст: {age}."
-    if year:
-        abstract += f" Пересмотр {year}."
+def _to_item(entry: dict) -> dict:
+    official = entry.get("backend") == "official_api"
+    published = entry.get("published") or (str(entry["year"]) if entry.get("year") else "")
+    description = f"Карточка каталога: {entry['title']}."
+    if entry.get("codes"):
+        description += f" МКБ-10: {entry['codes']}."
+    if entry.get("age"):
+        description += f" Возраст: {entry['age']}."
+    if published:
+        description += (
+            f" Дата публикации в реестре: {published}."
+            if official
+            else f" Год пересмотра по данным зеркала: {published}."
+        )
     return {
         "source": SOURCE_ID,
-        "identifier": f"{SOURCE_ID}:{entry['slug']}",
+        "identifier": f"minzdrav:{'official:' if official else ''}{entry['slug']}",
         "title": entry["title"],
         "url": entry["url"],
-        "abstract": abstract,
+        "abstract": description,
         "authors": "",
         "published": published,
-        "icd_codes": codes,
-        "age_category": age,
-        "revision_year": year if year else "",
-        "developer": "",
-        "status": "Клиническая рекомендация Минздрава РФ",
-        "pdf_hint": "Полный текст — в Telegram-боте @clinirecbot (по названию или коду МКБ-10)",
+        "date_precision": entry.get("date_precision", "year" if published else "unknown"),
+        "date_kind": "registry_publication" if official else "mirror_revision_year",
+        "icd_codes": entry.get("codes", ""),
+        "age_category": entry.get("age", ""),
+        "revision_year": "" if official else entry.get("year") or "",
+        "official_id": entry.get("official_id", ""),
+        "version": entry.get("version", ""),
+        "registry_status": entry.get("registry_status"),
+        "content_kind": "metadata_only",
+        "provenance": "official_api" if official else "third_party_mirror",
+        "full_text_available": False,
+        "currency_verified": False,
+        "provenance_notice": (
+            "Метаданные официального API. Полный текст не загружен; это не резюме клинической рекомендации."
+            if official
+            else "Стороннее зеркало minzdrav.clinirec.ru. Полный текст, официальный ID и актуальность КР не проверены."
+        ),
     }
 
 
 def fetch(
-    topics: List[str],
-    rows: int = 20,
-    date_from: Optional[date] = None,
-    date_to: Optional[date] = None,
-) -> List[Dict]:
-    """Получить КР Минздрава по темам и диапазону лет пересмотра.
-
-    Строит каталог КР (страницы классов МКБ-10), оставляет записи, где все
-    слова темы встречаются в названии, кодах МКБ-10 или возрасте. Фильтр по
-    году пересмотра включается только когда запрошенный диапазон охватывает
-    несколько лет (пользователь выбрал «Произвольный» на широкий период):
-    рубрикатор — справочник с точностью до года, и при узком окне «неделя»/
-    «месяц» жёсткий отсев по году сделал бы демо по умолчанию пустым.
-    Записи возвращаются по убыванию года пересмотра, не больше ``rows`` штук.
-    """
-    date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
-    wanted = [topic.strip() for topic in topics if topic and topic.strip()]
-    if not wanted:
-        logger.warning("Темы для Минздрава пустые – поиск не выполняется.")
-        return []
+    topics: list[str], rows: int = 20, date_from: Optional[date] = None, date_to: Optional[date] = None
+) -> SearchResults:
+    topics = clean_topics(topics)
+    bounded_int(rows, "rows", 1, 100)
+    start, end = resolve_date_range(date_from=date_from, date_to=date_to)
     catalog = get_catalog()
-    if not catalog:
-        logger.warning("Каталог Минздрава пуст – поиск не выполняется.")
-        return []
-
-    # Годовой фильтр только при пересечении границы лет (широкий диапазон).
-    cross_year = date_to.year > date_from.year
-
-    by_year = sorted(
-        catalog.values(),
-        key=lambda e: (e["year"] or 0),
-        reverse=True,
-    )
-    matched: List[Dict] = []
-    for entry in by_year:
-        year = entry["year"]
-        if cross_year and year is not None and (year < date_from.year or year > date_to.year):
+    result = SearchResults(errors=getattr(catalog, "errors", []), warnings=getattr(catalog, "warnings", []))
+    if getattr(catalog, "backend", "mirror") == "mirror":
+        result.warnings.append(
+            diagnostic(
+                SOURCE_ID,
+                "year_precision",
+                "В зеркале известен только год: фильтр включает ВСЕ КР с годом в заданных границах, даже для окна «неделя». День публикации неизвестен.",
+            )
+        )
+        result.warnings.append(
+            diagnostic(
+                SOURCE_ID,
+                "mirror_metadata_only",
+                "Использованы метаданные стороннего зеркала, не полный текст и не проверка актуальности КР.",
+            )
+        )
+    unknown_dates = 0
+    for entry in catalog.values():
+        if not any(
+            _topic_matches(f"{entry['title']} {entry.get('codes', '')} {entry.get('age', '')}", topic)
+            for topic in topics
+        ):
             continue
-        searchable = f"{entry['title']} {entry['codes']} {entry['age']}"
-        if any(_topic_matches(searchable, topic) for topic in wanted):
-            matched.append(_to_item(entry))
-
-    matched.sort(key=lambda item: item["published"], reverse=True)
-    if len(matched) > rows:
-        logger.info(f"📥 Минздрав: найдено {len(matched)}, отдано последних {rows}")
-        matched = matched[:rows]
-    else:
-        logger.info(f"📥 Минздрав: отдано {len(matched)}")
-    return matched
+        if entry.get("backend") == "official_api":
+            published = entry.get("published", "")
+            if not published:
+                unknown_dates += 1
+                continue
+            if not start.isoformat() <= published <= end.isoformat():
+                continue
+        else:
+            year = entry.get("year")
+            if year is None:
+                unknown_dates += 1
+                continue
+            if not start.year <= year <= end.year:
+                continue
+        result.append(_to_item(entry))
+    if unknown_dates:
+        result.warnings.append(
+            diagnostic(
+                SOURCE_ID,
+                "unknown_dates",
+                f"Пропущено подходящих карточек без известной даты/года: {unknown_dates}.",
+            )
+        )
+    result.sort(key=lambda item: (item["published"], item["identifier"]), reverse=True)
+    del result[rows:]
+    return result
 
 
 if __name__ == "__main__":
-    # Логгер настраивать не нужно: это делает utils.py.
-    for record in fetch(load_config().get("topics") or ["астма"], rows=5):
-        print(record["identifier"], "|", record["revision_year"], "|", record["title"][:80])
-        print("   ", record["icd_codes"] or "—", "|", record["url"])
+    found = fetch(load_config().get("topics") or ["астма"], rows=5)
+    for record in found:
+        print(record["identifier"], "|", record["published"], "|", record["title"])
+    for notice in found.errors + found.warnings:
+        print(notice["message"])

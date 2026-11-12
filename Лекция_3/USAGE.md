@@ -1,43 +1,85 @@
-# Usage Guide
+# Краткая инструкция
 
-## Шаг 1. Установка зависимостей
+Полное описание архитектуры, ограничений и безопасности: [README.md](README.md).
+Требуется Python 3.11 или новее.
 
-```bash
-cd /Users/edwfa/Documents/antigravity/brave-mendeleev/multi_agent_archiv
+## 1. Установка
+
+Из корня репозитория, Linux/macOS:
+
+```sh
+cd Лекция_3
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+.venv/bin/python -m pip install --upgrade pip setuptools
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m streamlit run streamlit_app.py
 ```
 
-## Шаг 2. Настройка конфигурации
+Windows PowerShell:
 
-Отредактируйте файл `config.yaml`:
-- Укажите **topics** – список тем, которые хотите отслеживать.
-- Укажите **check_interval_seconds** – как часто проверять новые публикации (по умолчанию 3600 сек). 
-- В разделе **email** укажите свои данные SMTP‑сервера, логин и пароль, а также получателя (`to`). Пример:
-```yaml
-email:
-  smtp_server: smtp.gmail.com
-  smtp_port: 587
-  username: your.email@example.com
-  password: your_password
-  to: your.email@example.com
+```powershell
+cd Лекция_3
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
 ```
 
-> **Важно:** Не храните реальные пароли в репозитории. Вы можете использовать переменные окружения и изменить код `notifier.py` для их подгрузки.
+## 2. Первый поиск
 
-## Шаг 3. Запуск системы
+1. Оставьте источники Europe PMC и каталог КР Минздрава.
+2. Темы: `diabetes` и `сахарный диабет` (по одной в строке).
+3. Для КР выберите «Произвольный» и расширьте период, например с 2020 года.
+4. Нажмите «Запустить поиск сейчас».
+5. Проверьте предупреждения источников, происхождение и метод каждого результата.
 
-```bash
-source .venv/bin/activate
-python main.py
+Для Минздрава API — дата публикации в реестре, зеркало — только год
+пересмотра. Окно одной недели не превращает год в точную дату. Показанное
+**описание карточки — не резюме полного текста КР**. Ошибка источника —
+не доказательство отсутствия публикаций.
+
+История UI — только текущего сеанса. Серверные конфигурация, ключи, журнал
+и общий `history.json` из браузера не редактируются. По умолчанию работает
+локальный EN/RU LSA без LLM и без скачивания данных NLTK.
+
+## 3. Настройки сервера и CLI
+
+`config.yaml` содержит темы, источники, режим Минздрава (`official`, `mirror`,
+`auto`), LLM-пресеты и интервал планировщика. `auto` при сбое API включает
+зеркало с явным предупреждением; для строгого официального источника — `official`.
+Живую доступность официального API нужно проверить в вашей сети.
+
+```sh
+.venv/bin/python main.py
 ```
 
-Программа будет работать в режиме постоянного сервиса, проверять `archive.org` каждые `check_interval_seconds` и отправлять вам email‑сообщения с краткими резюме новых публикаций.
+Первый цикл запускается сразу, далее — по интервалу; остановка Ctrl+C.
+Streamlit планировщик не запускает. Почта выключена. Если нужна в CLI,
+заполните `smtp_server`, `smtp_port`, `username`, `from_address`,
+`to_address`, `password_env: SMTP_PASSWORD`; задайте пароль окружением и
+включите `send_email: true`. Не записывайте реальные секреты в Git.
+Неудачные резюме/письма не помечаются в истории как успешно обработанные.
 
-## Как остановить
+Для доверенного локального LLM-демо можно включить `ui.enable_llm`.
+В публичной сети платный API нужно защищать аутентификацией и квотами.
+Облачный `localhost` не обращается к Ollama на вашем компьютере.
 
-Нажмите `Ctrl+C` в терминале, где запущен `main.py`.
+## 4. MCP
 
----
-Если захотите добавить другие каналы уведомления (Telegram, Slack и т.п.), реализуйте новый класс‑нотификатор, удовлетворяющий интерфейсу `Notifier.send(message: str)` и укажите его в `main.py`.
+```sh
+.venv/bin/python mcp_client.py
+```
+
+Проверит stdio-соединение, девять tools и каталог шести источников без
+запросов к медицинским API. Для Cherry Studio/Cursor укажите абсолютные
+пути к Python виртуального окружения и `mcp_server.py`, транспорт STDIO.
+Подробный пример — в README. URL Streamlit не является MCP endpoint.
+
+## 5. Регрессионные проверки
+
+```sh
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/ruff check .
+.venv/bin/python -m pytest -q
+.venv/bin/python -m pip check
+```

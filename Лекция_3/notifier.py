@@ -1,41 +1,40 @@
-# notifier.py
-"""Агент-нотификатор – отправляет резюме по электронной почте.
+"""Optional CLI email notifications; never called from the public web UI/MCP."""
 
-Использует ``smtplib`` с TLS (STARTTLS). Учётные данные берутся из config.yaml.
-"""
-
+import logging
+import os
 import smtplib
 import ssl
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from typing import Dict
-import logging
+from email.message import EmailMessage
 
-# Дочерний логгер – вывод настраивается у родителя «archiv_tracker» (utils.py)
 logger = logging.getLogger("archiv_tracker.notifier")
 
 
-def send_email(subject: str, body: str, email_cfg: Dict) -> bool:
-    """Отправить письмо с заданными настройками.
-
-    ``email_cfg`` должен содержать ``smtp_server``, ``smtp_port``, ``username``,
-    ``password``, ``from_address`` и ``to_address``.
-    Возвращает ``True`` при успехе, иначе ``False``.
-    """
+def send_email(subject: str, body: str, email_cfg: dict) -> bool:
     try:
-        message = MIMEMultipart()
+        env_name = email_cfg.get("password_env", "SMTP_PASSWORD")
+        password = os.environ.get(env_name, "")
+        # Backwards compatibility for private local configurations only.
+        password = password or email_cfg.get("password", "")
+        if not password or not all(
+            email_cfg.get(key) for key in ("smtp_server", "username", "from_address", "to_address")
+        ):
+            raise ValueError("SMTP settings incomplete")
+        message = EmailMessage()
         message["From"] = email_cfg["from_address"]
         message["To"] = email_cfg["to_address"]
-        message["Subject"] = subject
-        message.attach(MIMEText(body, "plain"))
-
-        context = ssl.create_default_context()
-        with smtplib.SMTP(email_cfg["smtp_server"], email_cfg["smtp_port"]) as server:
-            server.starttls(context=context)
-            server.login(email_cfg["username"], email_cfg["password"])
-            server.sendmail(email_cfg["from_address"], email_cfg["to_address"], message.as_string())
-        logger.info("Summary email sent successfully.")
+        message["Subject"] = subject  # email library rejects CR/LF header injection.
+        message.set_content(body)
+        with smtplib.SMTP(
+            email_cfg["smtp_server"], int(email_cfg.get("smtp_port", 587)), timeout=20
+        ) as server:
+            server.ehlo()
+            server.starttls(context=ssl.create_default_context())
+            server.ehlo()
+            server.login(email_cfg["username"], password)
+            server.send_message(message)
+        logger.info("Письмо отправлено.")
         return True
-    except Exception as e:
-        logger.error(f"Failed to send email: {e}")
+    except Exception as exc:
+        # SMTP error bodies can echo credentials/recipient; don't log them.
+        logger.warning("Письмо не отправлено (%s).", type(exc).__name__)
         return False

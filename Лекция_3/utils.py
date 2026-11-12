@@ -1,90 +1,115 @@
-# utils.py
-"""Вспомогательные функции, общие для всех агентов.
-
-- Загрузка и сохранение конфигурации (YAML)
-- Простое файловое хранилище истории (JSON)
-- Настройка общего логгера
-- Диапазоны дат и разбор тем на слова
-- Загрузка и очистка текста страницы по URL
-"""
+"""Configuration, bounded text extraction, dates and atomic local history."""
 
 import calendar
 import json
-import re
-import requests
-from bs4 import BeautifulSoup
 import logging
 import os
+import re
+import tempfile
 from datetime import date, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
 import yaml
+from bs4 import BeautifulSoup
+from filelock import FileLock, Timeout
 
-# ---------------------------------------------------------------------------
-# Базовые пути
-# ---------------------------------------------------------------------------
-BASE_DIR = Path(__file__).parent
+from network import public_requests as requests
+from security import normalize_model_base, redact_text
+
+BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
-HISTORY_PATH = BASE_DIR / "history.json"
+DATA_DIR = Path(os.environ.get("TRACKER_DATA_DIR", str(BASE_DIR)))
+HISTORY_PATH = DATA_DIR / "history.json"
+LOG_PATH = DATA_DIR / "main.log"
 
-# ---------------------------------------------------------------------------
-# Логгер (один общий экземпляр)
-# ---------------------------------------------------------------------------
-LOG_PATH = BASE_DIR / "main.log"
+
+class RedactingFormatter(logging.Formatter):
+    def format(self, record):
+        return redact_text(super().format(record))
+
+
 logger = logging.getLogger("archiv_tracker")
 if not logger.handlers:
     logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
-    handler = logging.StreamHandler()
+    logger.propagate = False
+    formatter = RedactingFormatter("%(asctime)s - %(levelname)s - %(name)s - %(message)s")
+    handler = logging.StreamHandler()  # stderr: stdout belongs to MCP JSON-RPC.
     handler.setFormatter(formatter)
     logger.addHandler(handler)
-    # Дублируем журнал в файл main.log – его последние строки видны в интерфейсе
-    file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            LOG_PATH,
+            maxBytes=1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except OSError:
+        logger.warning("Файловый журнал недоступен; используется stderr.")
 
-# ---------------------------------------------------------------------------
-# Работа с конфигурацией
-# ---------------------------------------------------------------------------
+
 def load_config() -> Dict:
-    """Загрузить конфигурацию из ``config.yaml``.
-
-    Если файла нет, возвращает пустой словарь.
-    """
     if not CONFIG_PATH.is_file():
-        logger.warning(f"Config file not found at {CONFIG_PATH}, returning empty config.")
         return {}
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    with CONFIG_PATH.open(encoding="utf-8") as stream:
+        config = yaml.safe_load(stream) or {}
+    if not isinstance(config, dict):
+        raise ValueError("Корень config.yaml должен быть словарём.")
+    return config
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=path.name + ".",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def save_model_settings(engine: str, providers: Dict) -> None:
-    """Записать активного провайдера и блоки ``llm`` / ``providers`` в config.yaml."""
-    active = providers.get(engine) or providers.get("ollama") or {}
-    public_llm = {key: value for key, value in active.items() if value}
-    block = "# Чем строить резюме: sumy, ollama или openai.\n" + yaml.safe_dump(
-        {"summarizer": engine, "llm": public_llm, "providers": providers},
-        allow_unicode=True,
-        sort_keys=False,
-    )
-    text = CONFIG_PATH.read_text(encoding="utf-8") if CONFIG_PATH.is_file() else ""
-    pattern = re.compile(r"(?ms)^# Чем строить резюме:.*?(?=^# How often to check|\Z)")
-    if pattern.search(text):
-        text = pattern.sub(block + "\n", text, count=1)
-    else:
-        text = text.rstrip() + "\n\n" + block
-    CONFIG_PATH.write_text(text, encoding="utf-8")
+    """Local administration only. The public UI never calls this function."""
+    if engine not in {"sumy", "ollama", "openai"} or not isinstance(providers, dict):
+        raise ValueError("Некорректный провайдер.")
+    public = {}
+    for name, entry in providers.items():
+        if name not in {"ollama", "openai"} or not isinstance(entry, dict):
+            raise ValueError("Некорректные настройки провайдера.")
+        public[name] = {
+            key: entry[key] for key in ("base_url", "model", "api_key_env", "allow_private") if key in entry
+        }
+        if entry.get("base_url"):
+            public[name]["base_url"] = normalize_model_base(entry["base_url"])
+    config = load_config()
+    config.update(summarizer=engine, providers=public)
+    config.pop("llm", None)  # Avoid two competing copies of a provider preset.
+    _atomic_write(CONFIG_PATH, yaml.safe_dump(config, allow_unicode=True, sort_keys=False))
 
 
 def _subtract_months(day: date, months: int) -> date:
-    """Сдвинуть дату на ``months`` назад, ограничив день длиной целевого месяца."""
     month = day.month - months
     year = day.year
     while month <= 0:
         month += 12
         year -= 1
-    last_day = calendar.monthrange(year, month)[1]
-    return date(year, month, min(day.day, last_day))
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
 
 
 def resolve_date_range(
@@ -93,89 +118,90 @@ def resolve_date_range(
     date_to: Optional[date] = None,
     today: Optional[date] = None,
 ) -> Tuple[date, date]:
-    """Включительные границы поиска.
-
-    ``week`` — с даты 7 дней назад по сегодня, ``month`` — с этой даты
-    месяц назад по сегодня. Если заданы обе границы, используется они.
-    Иначе по умолчанию берётся неделя.
-    """
+    """Inclusive bounds. A single supplied bound is preserved, never ignored."""
     today = today or date.today()
-    if date_from is not None and date_to is not None:
-        return date_from, date_to
-    if preset == "month":
-        return _subtract_months(today, 1), today
-    return today - timedelta(days=7), today
+    end = date_to if date_to is not None else today
+    if date_from is not None:
+        start = date_from
+    elif preset == "month":
+        start = _subtract_months(end, 1)
+    elif preset == "week":
+        start = end - timedelta(days=6)  # Seven calendar days including end.
+    else:
+        raise ValueError("Неизвестный диапазон дат.")
+    if not isinstance(start, date) or not isinstance(end, date) or start > end:
+        raise ValueError("Дата «С» должна быть не позже даты «По».")
+    return start, end
 
 
 def topic_tokens(topic: str) -> List[str]:
-    """Разбить тему так же, как поиск arxiv.org: по пробелам и дефисам.
-
-    «medical multi-agent» → medical, multi, agent. Порядок слов не важен.
-    """
     return [part for part in re.split(r"[\s\-]+", topic.strip()) if part]
 
 
 def token_is_exact(token: str) -> bool:
-    """Короткие аббревиатуры вроде RAG ищутся целиком, без префикса."""
-    letters = re.sub(r"[^A-Za-z]", "", token)
+    letters = "".join(ch for ch in token if ch.isalpha())
     return bool(letters) and letters.isupper() and len(letters) <= 5
 
-# ---------------------------------------------------------------------------
-# Простой извлекатель текста из HTML (для валидатора и оркестратора)
-# ---------------------------------------------------------------------------
-def extract_text_from_url(url: str) -> str:
-    """Загрузить *url* и вернуть видимый текст страницы.
 
-    Удаляет теги ``script``, ``style`` и ``noscript`` и склеивает оставшиеся
-    строки. При ошибке возвращает пустую строку.
-    """
+def extract_text_from_url(url: str) -> str:
+    """Read only bounded HTML/text from a public address, without navigation."""
     try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for tag in soup(["script", "style", "noscript"]):
+        response = requests.get(url, timeout=15, max_bytes=2 * 1024 * 1024)
+        response.raise_for_status()
+        content_type = response.headers.get("Content-Type", "").lower()
+        if not any(kind in content_type for kind in ("text/html", "application/xhtml+xml", "text/plain")):
+            logger.warning("Источник вернул не HTML/текст; извлечение пропущено.")
+            return ""
+        if "text/plain" in content_type:
+            return response.text.strip()[:50000]
+        soup = BeautifulSoup(response.content, "html.parser")
+        for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "aside"]):
             tag.decompose()
-        return " ".join(soup.stripped_strings)
-    except Exception as e:
-        logger.error(f"Failed to extract text from {url}: {e}")
+        body = soup.find("article") or soup.find("main") or soup.body or soup
+        return " ".join(body.stripped_strings)[:50000]
+    except Exception as exc:
+        logger.warning("Извлечение текста не удалось (%s).", type(exc).__name__)
         return ""
 
-# ---------------------------------------------------------------------------
-# История (хранит обработанные идентификаторы, чтобы не было повторов)
-# ---------------------------------------------------------------------------
-def _ensure_history_file():
-    if not HISTORY_PATH.is_file():
-        HISTORY_PATH.write_text(json.dumps([]), encoding="utf-8")
 
-def get_history() -> List[str]:
-    """Вернуть список ранее обработанных идентификаторов."""
-    _ensure_history_file()
+def _read_history() -> List[str]:
+    if not HISTORY_PATH.is_file():
+        return []
     try:
-        with open(HISTORY_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except Exception as e:
-        logger.error(f"Failed to read history file: {e}")
+        if HISTORY_PATH.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError("history too large")
+        data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
+        return [item for item in data if isinstance(item, str)] if isinstance(data, list) else []
+    except (OSError, ValueError):
+        logger.warning("История недоступна или повреждена; используется пустая история.")
         return []
 
-def update_history(new_ids: List[str]):
-    """Дописать новые идентификаторы в файл истории с учётом ``history_size``."""
-    cfg = load_config()
-    max_size = cfg.get("history_size", 1000)
-    history = get_history()
-    history.extend(new_ids)
-    # Убираем дубликаты, сохраняя порядок (новые – в конце)
-    seen = set()
-    deduped = []
-    for item in history:
-        if item not in seen:
-            deduped.append(item)
-            seen.add(item)
-    # Обрезаем до ``max_size`` (оставляем самые свежие записи)
-    if len(deduped) > max_size:
-        deduped = deduped[-max_size:]
+
+def get_history() -> List[str]:
+    """Reading absent history does not create a file (including in read-only deployments)."""
     try:
-        with open(HISTORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(deduped, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to write history file: {e}")
+        if not HISTORY_PATH.exists():
+            return []
+        with FileLock(str(HISTORY_PATH) + ".lock", timeout=5):
+            return _read_history()
+    except (OSError, Timeout):
+        logger.warning("Не удалось прочитать историю.")
+        return []
+
+
+def update_history(new_ids: List[str]) -> bool:
+    """Cross-process lock + atomic replace; only successfully processed IDs belong here."""
+    try:
+        maximum = load_config().get("history_size", 1000)
+        if isinstance(maximum, bool) or not isinstance(maximum, int) or not 1 <= maximum <= 100000:
+            raise ValueError("Некорректный history_size.")
+        HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(HISTORY_PATH) + ".lock", timeout=5):
+            # Repeated IDs are moved to the end so the newest successful use is retained.
+            combined = _read_history() + [item for item in new_ids if isinstance(item, str)]
+            newest = list(dict.fromkeys(reversed(combined)))[:maximum]
+            _atomic_write(HISTORY_PATH, json.dumps(list(reversed(newest)), ensure_ascii=False, indent=2))
+        return True
+    except (OSError, ValueError, Timeout):
+        logger.warning("История не сохранена; результаты поиска остаются доступны.")
+        return False

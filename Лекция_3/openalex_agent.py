@@ -24,9 +24,9 @@ import time
 from datetime import date
 from typing import Dict, List, Optional
 
-import requests
-
+from network import public_requests as requests
 from utils import load_config, resolve_date_range
+from validation import bounded_int, clean_topics
 
 logger = logging.getLogger("archiv_tracker.openalex")
 
@@ -244,20 +244,20 @@ def _api_get(params: Dict) -> Dict:
     """
     for attempt in range(3):
         resp = requests.get(
-            OPENALEX_API_URL, params=params, headers={"User-Agent": USER_AGENT}, timeout=30,
+            OPENALEX_API_URL,
+            params=params,
+            headers={"User-Agent": USER_AGENT},
+            timeout=30,
         )
         if resp.status_code == 429 or resp.status_code >= 500:
             wait = 2.0 * (attempt + 1)
-            logger.warning(
-                f"⚠️ OpenAlex: HTTP {resp.status_code} {_error_message(resp)} – "
-                f"повтор через {wait:.0f} с"
-            )
+            logger.warning(f"⚠️ OpenAlex: HTTP {resp.status_code} – повтор через {wait:.0f} с")
             if attempt == 2:
                 break
             time.sleep(wait)
             continue
         if resp.status_code >= 400:
-            logger.error(f"❗ OpenAlex: HTTP {resp.status_code} {_error_message(resp)}")
+            logger.error(f"❗ OpenAlex: HTTP {resp.status_code}")
         resp.raise_for_status()
         return resp.json()
     raise RuntimeError("OpenAlex не ответил после трёх попыток")
@@ -300,6 +300,8 @@ def fetch(
     работы, у которых в источнике нет точной даты публикации (только год):
     фильтр по дате их не находит.
     """
+    topics = clean_topics(topics)
+    bounded_int(rows, "rows", 1, 100)
     date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
     query = build_query(topics, date_from, date_to)
     if not query:

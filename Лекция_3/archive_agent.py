@@ -9,10 +9,13 @@
 import logging
 from datetime import date
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
-import requests
+from bs4 import BeautifulSoup
 
+from network import public_requests as requests
 from utils import resolve_date_range
+from validation import bounded_int, clean_topics
 
 logger = logging.getLogger("archiv_tracker.archive")
 
@@ -34,7 +37,7 @@ def build_query(topics: List[str], date_from: date, date_to: date) -> str:
     archive.org разворачивает даты ``YYYY-MM-DD`` на полные сутки,
     поэтому конечный день входит в выборку целиком.
     """
-    topic_q = " OR ".join(f'"{topic}"' for topic in topics)
+    topic_q = " OR ".join(f'"{topic.replace(chr(34), " ").replace(chr(92), " ")}"' for topic in topics)
     date_q = f"publicdate:[{date_from.isoformat()} TO {date_to.isoformat()}]"
     return f"({topic_q}) AND {date_q}"
 
@@ -46,11 +49,13 @@ def fetch(
     date_to: Optional[date] = None,
 ) -> List[Dict]:
     """Получить последние записи archive.org по темам и диапазону дат."""
+    topics = clean_topics(topics)
+    bounded_int(rows, "rows", 1, 100)
     date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
     query = build_query(topics, date_from, date_to)
     params = {
         "q": query,
-        "fl[]": ["identifier", "title", "description"],
+        "fl[]": ["identifier", "title", "description", "publicdate", "creator"],
         "sort[]": "publicdate desc",
         "rows": rows,
         "output": "json",
@@ -60,19 +65,23 @@ def fetch(
     resp.raise_for_status()
     data = resp.json().get("response", {})
     docs = data.get("docs", [])
-    logger.info(
-        f"📥 archive.org: всего совпадений {data.get('numFound', '?')}, загружено {len(docs)}"
-    )
+    logger.info(f"📥 archive.org: всего совпадений {data.get('numFound', '?')}, загружено {len(docs)}")
     items = []
     for doc in docs:
         identifier = doc.get("identifier")
+        if not isinstance(identifier, str) or not identifier:
+            continue
         items.append(
             {
                 "source": SOURCE_ID,
                 "identifier": identifier,
                 "title": _as_text(doc.get("title")) or "(без названия)",
-                "url": f"https://archive.org/details/{identifier}",
-                "abstract": _as_text(doc.get("description")),
+                "url": f"https://archive.org/details/{quote(identifier, safe='')}",
+                "abstract": BeautifulSoup(_as_text(doc.get("description")), "html.parser").get_text(
+                    " ", strip=True
+                ),
+                "published": _as_text(doc.get("publicdate"))[:10],
+                "authors": _as_text(doc.get("creator")),
             }
         )
     return items

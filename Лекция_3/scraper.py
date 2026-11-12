@@ -1,17 +1,8 @@
-# scraper.py
-"""Агент-координатор поиска.
-
-Опрашивает подключённые агенты-источники (archive.org, arXiv.org …),
-отбрасывает уже просмотренные записи, передаёт остальные валидатору
-и возвращает список новых релевантных записей.
-
-Чтобы добавить новый источник, создайте модуль с константами SOURCE_ID,
-SOURCE_NAME и функцией fetch(topics, rows) и зарегистрируйте его в SOURCES.
-"""
+"""Source coordination with per-request diagnostics and lexical validation."""
 
 import logging
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Optional
 
 import archive_agent
 import arxiv_agent
@@ -19,101 +10,146 @@ import europepmc_agent
 import habr_agent
 import minzdrav_agent
 import openalex_agent
-from utils import load_config, get_history, update_history, resolve_date_range
-from validator import validate_item  # валидатор релевантности
+from results import SearchResults, diagnostic
+from security import UnsafeURL, normalize_url
+from utils import get_history, load_config, resolve_date_range, update_history
+from validation import bounded_int, clean_topics
+from validator import validate_item
 
 logger = logging.getLogger("archiv_tracker.scraper")
-
-# Реестр доступных агентов-источников: id → модуль
 SOURCES = {
-    archive_agent.SOURCE_ID: archive_agent,
-    arxiv_agent.SOURCE_ID: arxiv_agent,
-    openalex_agent.SOURCE_ID: openalex_agent,
-    habr_agent.SOURCE_ID: habr_agent,
-    europepmc_agent.SOURCE_ID: europepmc_agent,
-    minzdrav_agent.SOURCE_ID: minzdrav_agent,
+    module.SOURCE_ID: module
+    for module in (
+        archive_agent,
+        arxiv_agent,
+        openalex_agent,
+        habr_agent,
+        europepmc_agent,
+        minzdrav_agent,
+    )
 }
-# Человекочитаемые названия источников (для интерфейса)
-SOURCE_NAMES = {sid: mod.SOURCE_NAME for sid, mod in SOURCES.items()}
+SOURCE_NAMES = {sid: module.SOURCE_NAME for sid, module in SOURCES.items()}
+
+
+def clean_sources(sources) -> list[str]:
+    if not isinstance(sources, (list, tuple)) or not sources or len(sources) > len(SOURCES):
+        raise ValueError("Укажите от одного до шести источников.")
+    if any(not isinstance(sid, str) or sid not in SOURCES for sid in sources):
+        raise ValueError("Неизвестный источник. Доступны: " + ", ".join(SOURCES) + ".")
+    return list(dict.fromkeys(sources))
+
+
+def fetch_source(source_id: str, topics: list[str], rows: int, start: date, end: date) -> SearchResults:
+    """A source outage is never indistinguishable from a successful empty search."""
+    result = SearchResults(source_statuses={source_id: "ok"})
+    try:
+        fetched = SOURCES[source_id].fetch(topics, rows=rows, date_from=start, date_to=end)
+        result.errors.extend(getattr(fetched, "errors", []))
+        result.warnings.extend(getattr(fetched, "warnings", []))
+        if not isinstance(fetched, list):
+            raise TypeError("Invalid agent result")
+        seen = set()
+        for raw in fetched[:rows]:
+            try:
+                if (
+                    not isinstance(raw, dict)
+                    or not isinstance(raw.get("identifier"), str)
+                    or not raw["identifier"]
+                    or len(raw["identifier"]) > 512
+                ):
+                    raise ValueError("Invalid identifier")
+                item = dict(raw, source=source_id)
+                item["url"] = normalize_url(item.get("url"))
+                if not isinstance(item.get("title"), str):
+                    raise ValueError("Invalid title")
+                item["title"] = item["title"][:1000]
+                if not isinstance(item.get("abstract", ""), str):
+                    raise ValueError("Invalid abstract")
+                item["abstract"] = item.get("abstract", "")[:50000]
+                if item["identifier"] not in seen:
+                    result.append(item)
+                    seen.add(item["identifier"])
+            except (ValueError, TypeError):
+                result.warnings.append(
+                    diagnostic(
+                        source_id,
+                        "invalid_record",
+                        "Запись с некорректными метаданными или ссылкой пропущена.",
+                    )
+                )
+    except Exception as exc:
+        logger.warning("Источник %s недоступен (%s).", source_id, type(exc).__name__)
+        response = getattr(exc, "response", None)
+        reason = f"HTTP {response.status_code}" if response is not None else type(exc).__name__
+        message = (
+            "Сетевая политика отклонила адрес источника."
+            if isinstance(exc, UnsafeURL)
+            else f"Не удалось получить данные источника ({reason})."
+        )
+        result.errors.append(diagnostic(source_id, "source_unavailable", message))
+    if result.errors:
+        result.source_statuses[source_id] = "partial" if result else "error"
+    elif result.warnings:
+        result.source_statuses[source_id] = "partial"
+    return result
 
 
 def get_new_items(
-    topics: Optional[List[str]] = None,
-    sources: Optional[List[str]] = None,
+    topics: Optional[list[str]] = None,
+    sources: Optional[list[str]] = None,
     rows: int = 20,
     skip_seen: bool = True,
-    save_history: bool = True,
+    save_history: bool = False,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-) -> List[Dict]:
-    """Вернуть новые релевантные записи из всех подключённых источников.
+) -> SearchResults:
+    """Search + relevance. The pipeline saves history only AFTER successful processing.
 
-    topics       – список тем (по умолчанию из config.yaml);
-    sources      – список id источников (по умолчанию из config.yaml);
-    rows         – сколько последних записей запрашивать у КАЖДОГО источника;
-    skip_seen    – пропускать записи, которые уже есть в истории;
-    save_history – записывать найденные записи в history.json;
-    date_from, date_to – включительные границы дат (по умолчанию последняя неделя).
+    Explicit save_history=True is retained for search-only CLI users. MCP and
+    main.process_items always pass False and manage their own read/write policy.
     """
     cfg = load_config()
-    if topics is None:
-        topics = cfg.get("topics", [])
-    if sources is None:
-        sources = cfg.get("sources", list(SOURCES))
-    if not topics:
-        logger.warning("Темы не заданы – поиск не выполняется.")
-        return []
-    if not sources:
-        logger.warning("Ни один источник не подключён – поиск не выполняется.")
-        return []
-    date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
-    logger.info(f"📅 Диапазон дат: {date_from.isoformat()} — {date_to.isoformat()}")
-
+    topics = clean_topics(cfg.get("topics", []) if topics is None else topics)
+    sources = clean_sources(cfg.get("sources", list(SOURCES)) if sources is None else sources)
+    bounded_int(rows, "rows", 1, 100)
+    if not isinstance(skip_seen, bool) or not isinstance(save_history, bool):
+        raise ValueError("Параметры истории должны быть логическими значениями.")
+    start, end = resolve_date_range(date_from=date_from, date_to=date_to)
     history = set(get_history()) if skip_seen else set()
-    if skip_seen:
-        logger.info(f"📚 В истории {len(history)} записей – они будут пропущены")
-
-    new_items: List[Dict] = []
+    result = SearchResults()
+    seen = set()
     for sid in sources:
-        agent = SOURCES.get(sid)
-        if agent is None:
-            logger.warning(f"Неизвестный источник «{sid}» – пропуск")
-            continue
-        logger.info(f"━━━━━━━━ Источник: {agent.SOURCE_NAME} ━━━━━━━━")
-        try:
-            items = agent.fetch(
-                topics, rows=rows, date_from=date_from, date_to=date_to,
-            )
-        except Exception as e:
-            logger.error(f"❗ {agent.SOURCE_NAME}: ошибка запроса – {e}")
-            continue
-
-        accepted = skipped = rejected = 0
-        logger.info(f"🧪 Валидатор проверяет {len(items)} записей на релевантность…")
-        for n, it in enumerate(items, start=1):
-            if it["identifier"] in history:
-                skipped += 1
-                logger.info(f"⏭ [{n}/{len(items)}] {it['identifier']}: уже в истории – пропуск")
+        batch = fetch_source(sid, topics, rows, start, end)
+        result.errors.extend(batch.errors)
+        result.warnings.extend(batch.warnings)
+        result.source_statuses.update(batch.source_statuses)
+        for item in batch:
+            identifier = item["identifier"]
+            if identifier in history or identifier in seen:
                 continue
-            logger.info(f"[{n}/{len(items)}] «{it['title'][:90]}»")
-            if validate_item(it, topics):
-                new_items.append(it)
-                accepted += 1
-            else:
-                rejected += 1
-        logger.info(
-            f"📊 {agent.SOURCE_NAME}: принято {accepted}, отклонено {rejected}, "
-            f"пропущено (история) {skipped}"
-        )
-
-    logger.info(f"📦 Всего новых релевантных записей: {len(new_items)}")
-    if new_items and save_history:
-        new_ids = [it["identifier"] for it in new_items]
-        update_history(new_ids)
-        logger.info(f"💾 В историю добавлено {len(new_ids)} записей")
-    return new_items
+            try:
+                if validate_item(item, topics):
+                    result.append(item)
+                    seen.add(identifier)
+            except Exception:
+                result.warnings.append(
+                    diagnostic(sid, "validation_failed", "Одну запись не удалось проверить на релевантность.")
+                )
+                result.source_statuses[sid] = "partial"
+    if result and save_history and not update_history([item["identifier"] for item in result]):
+        result.warnings.append(diagnostic("history", "write_failed", "История не сохранена."))
+    logger.info(
+        "Поиск завершён: записей %d, ошибок %d, предупреждений %d.",
+        len(result),
+        len(result.errors),
+        len(result.warnings),
+    )
+    return result
 
 
 if __name__ == "__main__":
-    for item in get_new_items():
-        print(item["source"], item["title"], item["url"])
+    found = get_new_items()
+    for entry in found:
+        print(entry["source"], entry["title"], entry["url"])
+    for error in found.errors:
+        print(error["source"], error["message"])
