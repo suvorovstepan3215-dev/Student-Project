@@ -1,214 +1,216 @@
-# main.py
-"""Точка входа мульти-агентного трекера публикаций (оркестратор).
-
-Планировщик запускает скрапер с настраиваемым интервалом, затем для каждой
-новой записи:
-  1. Берёт аннотацию или загружает HTML-страницу публикации.
-  2. Извлекает текст с помощью BeautifulSoup.
-  3. Строит резюме агентом-суммаризатором.
-  4. При включённой почте отправляет резюме агентом-нотификатором.
-
-Планировщик — ``APScheduler`` в фоновом потоке, поэтому скрипт можно
-запускать напрямую (`python main.py`).
-"""
+"""Publication pipeline and optional CLI scheduler; Streamlit runs one cycle directly."""
 
 import logging
-import sys
 import time
-from datetime import date
-from typing import List, Dict, Optional
-import requests
-from bs4 import BeautifulSoup
-# Попытка импортировать APScheduler; если не установлен, используем простой fallback
-try:
-    from apscheduler.schedulers.background import BackgroundScheduler
-except ImportError:
-    # Минимальная заглушка, имитирующая API Scheduler
-    class _DummyScheduler:
-        def add_job(self, func, trigger, **kwargs):
-            # При вызове сразу исполняем функцию (один раз)
-            func()
-        def start(self):
-            pass
-        def shutdown(self):
-            pass
-    BackgroundScheduler = _DummyScheduler
+from datetime import date, datetime, timezone
+from typing import Optional
 
-# Локальные модули проекта
-from utils import load_config, logger as base_logger, extract_text_from_url, resolve_date_range
-from scraper import get_new_items, SOURCE_NAMES
-from summarizer import (
-    LlmUnavailable,
-    llm_unavailable_message,
-    normalize_engine,
-    resolve_llm,
-    summarize,
-)
+from apscheduler.schedulers.background import BackgroundScheduler
+
 from notifier import send_email
+from results import SearchResults, diagnostic
+from scraper import SOURCE_NAMES, clean_sources, get_new_items
+from summarizer import LlmUnavailable, normalize_engine, summarize_with_details
+from utils import extract_text_from_url, load_config, resolve_date_range, update_history
+from validation import bounded_int, clean_topics
 
-# Дочерний логгер: сообщения передаются родителю «archiv_tracker» (utils.py),
-# у которого настроены вывод в терминал и в main.log – свои обработчики не нужны.
 logger = logging.getLogger("archiv_tracker.main")
-
-
-def extract_text_from_url(url: str) -> str:
-    """Загрузить *url* и вернуть видимый текст страницы.
-
-    Простейший извлекатель: удаляет теги script/style/noscript и склеивает
-    оставшиеся фрагменты текста. Для PDF понадобился бы другой извлекатель,
-    но у archive.org обычно есть HTML-страница details, текста которой
-    достаточно для короткого резюме.
-    """
-    try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for tag in soup(["script", "style", "noscript"]):
-            tag.decompose()
-        text = " ".join(soup.stripped_strings)
-        return text
-    except Exception as e:
-        logger.error(f"Failed to extract text from {url}: {e}")
-        return ""
+MAX_PROCESSED_ITEMS = 100
+MAX_PROCESSING_SECONDS = 120
 
 
 def process_items(
-    topics: Optional[List[str]] = None,
-    sources: Optional[List[str]] = None,
+    topics: Optional[list[str]] = None,
+    sources: Optional[list[str]] = None,
     rows: int = 20,
     skip_seen: bool = True,
     save_history: bool = True,
     max_sentences: int = 3,
     text_limit: int = 2000,
     engine: Optional[str] = None,
-    llm: Optional[Dict] = None,
+    llm: Optional[dict] = None,
     send: Optional[bool] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-) -> List[Dict]:
-    """Основной цикл обработки – вызывается планировщиком и панелью Streamlit.
+    session_history: Optional[list[str]] = None,
+) -> SearchResults:
+    """A result contains items AND request-local errors/warnings/source_statuses.
 
-    1. Получить новые записи от подключённых агентов-источников (archive.org, arXiv …).
-    2. Для каждой записи взять аннотацию (или текст страницы) и построить резюме.
-    3. При необходимости отправить резюме на почту.
-
-    ``send=None`` означает «взять значение ``send_email`` из config.yaml»
-    (по умолчанию ``False`` – письма не отправляются, пока это явно не включено).
-
-    Возвращает список словарей: source, identifier, title, url, summary, status …
+    Prefer even a short supplied abstract to downloading a navigation page.
+    Catalogue metadata is labelled as metadata, never as a guideline summary.
+    Only successful summaries/notifications are added to durable history.
     """
-    t0 = time.time()
+    started = time.monotonic()
     cfg = load_config()
-    if topics is None:
-        topics = cfg.get("topics", [])
-    if sources is None:
-        sources = cfg.get("sources", list(SOURCE_NAMES))
-    date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
+    topics = clean_topics(cfg.get("topics", []) if topics is None else topics)
+    sources = clean_sources(cfg.get("sources", list(SOURCE_NAMES)) if sources is None else sources)
+    bounded_int(rows, "rows", 1, 100)
+    bounded_int(max_sentences, "max_sentences", 1, 10)
+    bounded_int(text_limit, "text_limit", 100, 10000)
+    if (
+        not isinstance(skip_seen, bool)
+        or not isinstance(save_history, bool)
+        or (send is not None and not isinstance(send, bool))
+    ):
+        raise ValueError("Флаги запуска должны быть логическими значениями.")
+    if session_history is not None and (
+        not isinstance(session_history, list)
+        or len(session_history) > 1000
+        or any(not isinstance(item, str) for item in session_history)
+    ):
+        raise ValueError("Некорректная история сеанса.")
+    session_seen = set(session_history or [])
+    start, end = resolve_date_range(date_from=date_from, date_to=date_to)
     engine = normalize_engine(engine if engine is not None else cfg.get("summarizer"))
-    if engine != "sumy" and llm is None:
-        llm = resolve_llm(cfg, engine)
-    llm_notice = llm_unavailable_message(llm) if engine != "sumy" else None
-    if llm_notice:
-        logger.warning(llm_notice)
-        engine = "sumy"
-    process_items.last_llm_notice = llm_notice
-    if send is None:
-        send = bool(cfg.get("send_email", False))
-    email_cfg = cfg.get("email", {})
-    if send and not email_cfg:
-        logger.error("Настройки почты не заданы – письма отправляться не будут.")
-        send = False
-
-    logger.info("▶️ Запуск цикла обработки")
-    logger.info(f"   Темы: {', '.join(topics) or '—'}")
-    logger.info(f"   Источники: {', '.join(SOURCE_NAMES.get(s, s) for s in sources) or '—'}")
-    logger.info(f"   Даты: {date_from.isoformat()} — {date_to.isoformat()}")
-    if engine == "sumy":
-        backend = "Sumy"
-    else:
-        backend = (llm or {}).get("model") or engine
-    logger.info(
-        f"   Записей с источника: {rows}; предложений в резюме: {max_sentences}; "
-        f"резюме: {backend}; лимит текста: {text_limit}; почта: {'вкл' if send else 'выкл'}"
+    send = cfg.get("send_email", False) is True if send is None else send
+    email_cfg = cfg.get("email") or {}
+    fetched = get_new_items(
+        topics=topics,
+        sources=sources,
+        rows=rows,
+        skip_seen=skip_seen and session_history is None,
+        save_history=False,
+        date_from=start,
+        date_to=end,
     )
-
-    new_items = get_new_items(
-        topics=topics, sources=sources, rows=rows,
-        skip_seen=skip_seen, save_history=save_history,
-        date_from=date_from, date_to=date_to,
+    results = SearchResults(
+        errors=getattr(fetched, "errors", []),
+        warnings=getattr(fetched, "warnings", []),
+        source_statuses=getattr(fetched, "source_statuses", {}),
     )
-    results: List[Dict] = []
-    if not new_items:
-        logger.info(f"⏹ Новых публикаций нет. Цикл завершён за {time.time() - t0:.1f} с")
-        return results
-
-    logger.info(f"━━━━━━━━ Суммаризация: {len(new_items)} публикаций ━━━━━━━━")
-    for n, item in enumerate(new_items, start=1):
-        src = SOURCE_NAMES.get(item.get("source"), item.get("source", "?"))
-        logger.info(f"📄 [{n}/{len(new_items)}] ({src}) {item['title'][:100]}")
-        result = dict(item, summary="", status="")
-
-        abstract = item.get("abstract") or ""
-        if len(abstract) >= 200:
-            raw_text = abstract[:text_limit]
-            logger.info(f"   Текст: аннотация из метаданных, {len(raw_text)} символов")
-        else:
-            t1 = time.time()
-            logger.info(f"   Загрузка страницы {item['url']} …")
-            raw_text = extract_text_from_url(item["url"])[:text_limit]  # обрезаем текст ради скорости
-            logger.info(f"   Текст: со страницы, {len(raw_text)} символов ({time.time() - t1:.1f} с)")
-        if not raw_text:
-            logger.warning(f"   ⚠️ Текст не получен – публикация пропущена")
-            result["status"] = "Не удалось извлечь текст"
-            results.append(result)
+    successful_ids = []
+    llm_failed = False  # Request-local, not a shared function attribute/session leak.
+    deadline = time.monotonic() + MAX_PROCESSING_SECONDS
+    for item in fetched:
+        if skip_seen and item["identifier"] in session_seen:
             continue
-
-        try:
-            summary = summarize(
-                raw_text, max_sentences=max_sentences, engine=engine, llm=llm,
+        if len(results) >= MAX_PROCESSED_ITEMS or time.monotonic() >= deadline:
+            results.warnings.append(
+                diagnostic(
+                    "pipeline",
+                    "processing_limit",
+                    "Достигнут лимит обработки одного цикла (100 записей / 120 секунд после поиска). Остальное не записано в историю.",
+                )
             )
-        except LlmUnavailable as exc:
-            if not process_items.last_llm_notice:
-                process_items.last_llm_notice = exc.message
-                logger.warning(exc.message)
-            engine = "sumy"
-            summary = summarize(raw_text, max_sentences=max_sentences, engine="sumy")
-        result["summary"] = summary
-        logger.info(f"   ✍️ Резюме готово: {len(summary)} символов")
-        if send:
-            subject = f"Новая публикация ({src}): {item['title']}"
-            body = f"URL: {item['url']}\n\nРезюме:\n{summary}\n"
-            success = send_email(subject, body, email_cfg)
-            result["status"] = "Отправлено на почту" if success else "Ошибка отправки"
-            logger.info(f"   ✉️ {result['status']}")
+            break
+        result = dict(item, summary="", status="", summary_method="none", summary_input="")
+        metadata_only = item.get("content_kind") == "metadata_only"
+        raw_text = str(item.get("abstract") or "").strip()
+        if metadata_only:
+            # This description was built from known fields. No LLM and no page
+            # fetch can turn a title/code/year into nonexistent clinical content.
+            result.update(
+                summary=raw_text[:text_limit],
+                summary_method="metadata_only",
+                summary_input="catalog_metadata",
+                status="Описание карточки, не резюме полного текста КР",
+            )
         else:
-            result["status"] = "Не отправлялось (тестовый режим)"
-            logger.info("   ✉️ Почта выключена – письмо не отправлялось")
+            result["summary_input"] = "abstract" if raw_text else "web_page"
+            if not raw_text:
+                raw_text = extract_text_from_url(item["url"])
+            raw_text = raw_text[:text_limit]
+            if not raw_text.strip():
+                result["status"] = "Не удалось извлечь текст"
+                results.warnings.append(
+                    diagnostic(
+                        item["source"],
+                        "text_unavailable",
+                        "У одной записи нет текста для резюме; в историю она не записана.",
+                    )
+                )
+                results.append(result)
+                continue
+            try:
+                try:
+                    summary = summarize_with_details(
+                        raw_text, max_sentences, "sumy" if llm_failed else engine, llm
+                    )
+                except LlmUnavailable as exc:
+                    llm_failed = True
+                    results.warnings.append(diagnostic("llm", "local_fallback", exc.message))
+                    summary = summarize_with_details(raw_text, max_sentences, "sumy")
+                result["summary"] = summary.text
+                result["summary_method"] = summary.method
+                if summary.notice:
+                    result["summary_notice"] = summary.notice
+            except Exception as exc:
+                logger.warning("Резюме одной записи не построено (%s).", type(exc).__name__)
+                result["status"] = "Ошибка построения резюме"
+                results.errors.append(
+                    diagnostic(
+                        item["source"],
+                        "summary_failed",
+                        "Не удалось построить резюме одной записи; повторная обработка остаётся возможной.",
+                    )
+                )
+                results.append(result)
+                continue
+        success = bool(result["summary"])
+        if send and success:
+            source_name = SOURCE_NAMES.get(item["source"], item["source"])
+            subject = f"Новая запись ({source_name}): {item['title']}"
+            body = f"URL: {item['url']}\nМетод: {result['summary_method']}\n\n{result['summary']}\n"
+            success = send_email(subject, body, email_cfg)
+            result["status"] = "Отправлено на почту" if success else "Ошибка отправки; в историю не записано"
+            if not success:
+                results.warnings.append(
+                    diagnostic(
+                        "email",
+                        "send_failed",
+                        "Письмо не отправлено. Запись не добавлена в историю для повторной попытки.",
+                    )
+                )
+        elif not metadata_only:
+            result["status"] = (
+                "Резюме готово; почта выключена" if success else "Резюме пустое; в историю не записано"
+            )
+        if success:
+            successful_ids.append(item["identifier"])
         results.append(result)
-
+    if save_history and successful_ids and not update_history(successful_ids):
+        results.warnings.append(diagnostic("history", "write_failed", "Не удалось сохранить историю."))
     logger.info(
-        f"⏹ Цикл завершён за {time.time() - t0:.1f} с: обработано {len(results)}, "
-        f"с резюме {sum(1 for r in results if r['summary'])}"
+        "Цикл завершён за %.1f с: записей %d, успешно %d.",
+        time.monotonic() - started,
+        len(results),
+        len(successful_ids),
     )
     return results
 
 
+def create_scheduler(config: Optional[dict] = None) -> BackgroundScheduler:
+    config = load_config() if config is None else config
+    interval = bounded_int(
+        config.get("check_interval_seconds", 3600), "check_interval_seconds", 60, 86400 * 30
+    )
+    scheduler = BackgroundScheduler(timezone="UTC")
+    scheduler.add_job(
+        process_items,
+        "interval",
+        seconds=interval,
+        id="publication_check",
+        next_run_time=datetime.now(timezone.utc),
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+        replace_existing=True,
+    )
+    return scheduler
+
+
 def main():
-    cfg = load_config()
-    interval = cfg.get("check_interval_seconds", 3600)
-    scheduler = BackgroundScheduler()
-    # Если используется dummy‑scheduler, add_job сразу выполнит задачу один раз.
-    scheduler.add_job(process_items, "interval", seconds=interval, id="archive_check", next_run_time=None)
-    logger.info(f"Scheduler started – checking every {interval} seconds.")
+    scheduler = create_scheduler()
     scheduler.start()
-    # Если это реальный APScheduler, он будет работать в фоне; иначе – просто завершим процесс.
+    logger.info("Планировщик запущен; первый цикл выполняется сразу.")
     try:
-        import time
         while True:
             time.sleep(60)
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Shutting down scheduler…")
-        scheduler.shutdown()
+        logger.info("Остановка планировщика…")
+    finally:
+        scheduler.shutdown(wait=True)
+
 
 if __name__ == "__main__":
     main()

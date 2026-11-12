@@ -1,14 +1,16 @@
 # mcp_client.py
 """Короткоживущий MCP-клиент по stdio. Каждая операция поднимает сервер и закрывает его.
 
-Клиент нужен для демо и для Streamlit: он не импортирует агентов напрямую,
-а говорит с ``mcp_server.py`` по протоколу MCP — как любой внешний host
-(Cursor, Claude Desktop). Сервер запускается из папки проекта, поэтому
+Клиент нужен для отдельного MCP-демо: он не импортирует агентов напрямую,
+а говорит с ``mcp_server.py`` по протоколу MCP — как внешний host.
+Streamlit использует Python-пайплайн напрямую, а не этот клиент.
+Сервер запускается из папки проекта, поэтому
 импорты агентов работают без установки пакета.
 """
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,11 +25,23 @@ PROJECT_DIR = Path(__file__).resolve().parent
 
 
 def _server_parameters() -> StdioServerParameters:
+    # The SDK inherits only a small default environment. Explicitly pass the
+    # settings our read-only tools need, not all host credentials (GH, SMTP, etc.).
+    environment = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    for name in (
+        "TRACKER_DATA_DIR",
+        "TRACKER_CA_BUNDLE",
+        "OPENALEX_API_KEY",
+        "OPENALEX_MAILTO",
+        "EUROPEPMC_EMAIL",
+    ):
+        if name in os.environ:
+            environment[name] = os.environ[name]
     return StdioServerParameters(
         command=sys.executable,
         args=[str(PROJECT_DIR / "mcp_server.py")],
         cwd=str(PROJECT_DIR),
-        env={"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        env=environment,
     )
 
 

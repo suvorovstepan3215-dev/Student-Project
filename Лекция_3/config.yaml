@@ -1,73 +1,52 @@
-# config.yaml
-# Configuration for the Multi‑Agent Publication Tracker
-
-# List of keywords or topics to monitor on archiv.org
-# Темы общие для всех источников: английская фраза — для научных баз
-# (Europe PMC, arXiv, OpenAlex, Habr, archive.org), русская — для Рубрикатора
-# КР Минздрава (каталог ищется по названию заболевания или коду МКБ-10).
-# Запись проходит, если любая из тем нашлась в тексте.
+# Server-owned settings. The public web interface cannot write this file.
 topics:
-  - "medical multi-agent"
+  - "diabetes"
   - "сахарный диабет"
 
-# Подключённые источники поиска (по умолчанию). Доступно: archive, arxiv, openalex, habr, europepmc
+# The two selected coursework sources. Other adapters remain available in UI/MCP.
 sources:
-  - "archive"
-  - "arxiv"
-  - "openalex"
-  - "habr"
   - "europepmc"
+  - "minzdrav"
 
-# OpenAlex: письмо для «вежливого» пула и ключ API. Оба поля необязательны —
-# без них запросы идут в общий бесплатный дневной лимит на IP-адрес.
-# Секреты лучше держать в окружении: OPENALEX_MAILTO и OPENALEX_API_KEY.
 openalex:
-  mailto: ""
-  api_key: ""
-
-# Europe PMC: письмо для «вежливого» пула. Необязательно — без него запросы
-# идут в общий бесплатный лимит на IP-адрес. Можно задать окружением EUROPEPMC_EMAIL.
+  mailto: ""  # Or OPENALEX_MAILTO in the server environment.
+  api_key: ""  # Prefer OPENALEX_API_KEY; never commit a real key.
 europepmc:
-  email: ""
+  email: ""  # Optional EUROPEPMC_EMAIL.
 
-# Рубрикатор КР Минздрава РФ: агент работает с открытым зеркалом каталога
-# (официальный cr.minzdrav.gov.ru защищён от автообхода и не имеет публичного
-# API). Базовый адрес можно сменить, если зеркало недоступно. По умолчанию
-# источник не включён в активные (исторически это справочник, а не лента),
-# его можно добавить в «Подключённые источники» в интерфейсе или в sources ниже.
 minzdrav:
+  # auto: official API first; a visible warning accompanies mirror fallback.
+  # official: no fallback. mirror: explicitly use third-party metadata only.
+  mode: auto
   base_url: "https://minzdrav.clinirec.ru"
+  cache_ttl_seconds: 900
 
-# Чем строить резюме: sumy, ollama или openai.
 summarizer: sumy
-llm:
-  base_url: http://localhost:11434/v1
-  model: qwen2.5:7b
 providers:
   ollama:
-    base_url: http://localhost:11434/v1
-    model: qwen2.5:7b
+    base_url: "http://localhost:11434/v1"
+    model: "qwen2.5:7b"
+    # Only this server-owned preset may access the server's local Ollama.
+    # In a cloud deployment localhost is NOT the user's computer.
+    allow_private: true
   openai:
-    base_url: https://api.openai.com/v1
-    model: gpt-4o-mini
-    api_key_env: OPENAI_API_KEY
+    base_url: "https://api.openai.com/v1"
+    model: "gpt-4o-mini"
+    api_key_env: "OPENAI_API_KEY"
+    allow_private: false
 
-# How often to check for new publications (in seconds)
-check_interval_seconds: 3600  # every hour
+ui:
+  # Public default: no anonymous access to a paid/server-local LLM.
+  # Enable only behind authentication/rate limiting or in a trusted local demo.
+  enable_llm: false
 
-# Отправлять ли резюме на почту. Пока идёт проверка – выключено (false):
-# результаты только показываются в интерфейсе Streamlit / в логах.
+check_interval_seconds: 3600
 send_email: false
-
-# Email settings for sending summaries
 email:
   smtp_server: "smtp.gmail.com"
   smtp_port: 587
-  username: "your.email@example.com"
-  # For security, use an app‑specific password or environment variable
-  password: "YOUR_EMAIL_PASSWORD"
-  from_address: "your.email@example.com"
-  to_address: "recipient@example.com"
-
-# Optional: maximum number of items to keep in history to avoid repeats
+  username: ""
+  password_env: "SMTP_PASSWORD"
+  from_address: ""
+  to_address: ""
 history_size: 1000

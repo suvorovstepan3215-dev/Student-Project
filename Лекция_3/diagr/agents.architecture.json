@@ -1,142 +1,666 @@
 {
   "schema_version": 1,
   "diagram_type": "architecture",
+  "canvas": [
+    1440,
+    1010
+  ],
   "meta": {
-    "title": "Агенты трекера публикаций",
-    "quality_profile": "showcase"
+    "title": "Трекер медицинских публикаций: агенты и MCP"
   },
   "components": [
     {
       "id": "panel",
-      "type": "frontend",
-      "label": "Панель",
-      "sublabel": "streamlit_app.py",
-      "pos": [80, 72],
-      "size": [220, 78]
+      "type": "backend",
+      "pos": [
+        40,
+        115
+      ],
+      "size": [
+        270,
+        100
+      ],
+      "label": "Streamlit UI",
+      "details": [
+        "Сеанс: темы, даты, история",
+        "Прямой вызов Python"
+      ],
+      "color": "#38bdf8"
     },
     {
       "id": "orchestrator",
       "type": "backend",
+      "pos": [
+        410,
+        115
+      ],
+      "size": [
+        300,
+        100
+      ],
       "label": "Оркестратор",
-      "sublabel": "main.process_items",
-      "pos": [420, 72],
-      "size": [220, 78]
-    },
-    {
-      "id": "notifier",
-      "type": "backend",
-      "label": "Нотификатор",
-      "sublabel": "SMTP, сейчас выкл",
-      "pos": [760, 424],
-      "size": [220, 78]
-    },
-    {
-      "id": "archiveAgent",
-      "type": "backend",
-      "label": "Агент archive.org",
-      "sublabel": "publicdate",
-      "pos": [80, 248],
-      "size": [220, 78]
-    },
-    {
-      "id": "scraper",
-      "type": "backend",
-      "label": "Скрапер",
-      "sublabel": "координатор источников",
-      "pos": [420, 248],
-      "size": [220, 78]
-    },
-    {
-      "id": "arxivAgent",
-      "type": "backend",
-      "label": "Агент arXiv",
-      "sublabel": "submittedDate",
-      "pos": [760, 248],
-      "size": [220, 78]
-    },
-    {
-      "id": "openalexAgent",
-      "type": "backend",
-      "label": "Агент OpenAlex",
-      "sublabel": "publication_date",
-      "pos": [80, 424],
-      "size": [220, 78]
-    },
-    {
-      "id": "habrAgent",
-      "type": "backend",
-      "label": "Агент Habr",
-      "sublabel": "pubDate из RSS",
-      "pos": [80, 600],
-      "size": [220, 78]
-    },
-    {
-      "id": "validator",
-      "type": "backend",
-      "label": "Валидатор",
-      "sublabel": "все слова темы",
-      "pos": [420, 424],
-      "size": [220, 78]
+      "details": [
+        "main.process_items",
+        "Описание / резюме / статусы"
+      ],
+      "color": "#38bdf8"
     },
     {
       "id": "summarizer",
       "type": "backend",
+      "pos": [
+        810,
+        115
+      ],
+      "size": [
+        300,
+        100
+      ],
       "label": "Суммаризатор",
-      "sublabel": "sumy LSA",
-      "pos": [760, 72],
-      "size": [220, 78]
-    }
-  ],
-  "boundaries": [
+      "details": [
+        "EN/RU LSA → fallback",
+        "LLM: серверный пресет"
+      ],
+      "color": "#38bdf8"
+    },
     {
-      "kind": "region",
-      "label": "Локальные агенты",
-      "wraps": ["panel", "orchestrator", "notifier", "archiveAgent", "scraper", "arxivAgent", "openalexAgent", "habrAgent", "validator", "summarizer"]
+      "id": "notifier",
+      "type": "backend",
+      "pos": [
+        1180,
+        115
+      ],
+      "size": [
+        220,
+        100
+      ],
+      "label": "SMTP / история",
+      "details": [
+        "Только CLI",
+        "После успеха"
+      ],
+      "color": "#94a3b8"
+    },
+    {
+      "id": "client",
+      "type": "backend",
+      "pos": [
+        40,
+        315
+      ],
+      "size": [
+        270,
+        100
+      ],
+      "label": "Внешний MCP-host",
+      "details": [
+        "Cherry Studio / Cursor",
+        "Или mcp_client.py"
+      ],
+      "color": "#a78bfa"
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "pos": [
+        410,
+        315
+      ],
+      "size": [
+        300,
+        100
+      ],
+      "label": "MCP-сервер stdio",
+      "details": [
+        "mcp_server.py",
+        "9 read-only tools"
+      ],
+      "color": "#a78bfa"
+    },
+    {
+      "id": "service",
+      "type": "backend",
+      "pos": [
+        810,
+        315
+      ],
+      "size": [
+        300,
+        100
+      ],
+      "label": "Сервис MCP",
+      "details": [
+        "mcp_service.py",
+        "Каталог / поиск / резюме"
+      ],
+      "color": "#a78bfa"
+    },
+    {
+      "id": "scraper",
+      "type": "backend",
+      "pos": [
+        410,
+        500
+      ],
+      "size": [
+        300,
+        100
+      ],
+      "label": "Координатор поиска",
+      "details": [
+        "scraper.py",
+        "Записи + errors / warnings"
+      ],
+      "color": "#38bdf8"
+    },
+    {
+      "id": "validator",
+      "type": "backend",
+      "pos": [
+        810,
+        500
+      ],
+      "size": [
+        300,
+        100
+      ],
+      "label": "Валидатор",
+      "details": [
+        "Слова темы / русские основы",
+        "Не медицинский фактчекинг"
+      ],
+      "color": "#38bdf8"
+    },
+    {
+      "id": "europepmc",
+      "type": "backend",
+      "pos": [
+        40,
+        745
+      ],
+      "size": [
+        210,
+        100
+      ],
+      "label": "Europe PMC",
+      "details": [
+        "REST / core / курсор",
+        "Новые первыми"
+      ],
+      "color": "#34d399"
+    },
+    {
+      "id": "minzdrav",
+      "type": "backend",
+      "pos": [
+        270,
+        745
+      ],
+      "size": [
+        210,
+        100
+      ],
+      "label": "Каталог КР",
+      "details": [
+        "API → зеркало с пометкой",
+        "Только метаданные"
+      ],
+      "color": "#34d399"
+    },
+    {
+      "id": "archive",
+      "type": "backend",
+      "pos": [
+        500,
+        745
+      ],
+      "size": [
+        210,
+        100
+      ],
+      "label": "archive.org",
+      "details": [
+        "publicdate",
+        "Метаданные"
+      ],
+      "color": "#64748b"
+    },
+    {
+      "id": "arxiv",
+      "type": "backend",
+      "pos": [
+        730,
+        745
+      ],
+      "size": [
+        210,
+        100
+      ],
+      "label": "arXiv",
+      "details": [
+        "Atom / версии",
+        "Аннотации"
+      ],
+      "color": "#64748b"
+    },
+    {
+      "id": "openalex",
+      "type": "backend",
+      "pos": [
+        960,
+        745
+      ],
+      "size": [
+        210,
+        100
+      ],
+      "label": "OpenAlex",
+      "details": [
+        "REST / курсор",
+        "Аннотации"
+      ],
+      "color": "#64748b"
+    },
+    {
+      "id": "habr",
+      "type": "backend",
+      "pos": [
+        1190,
+        745
+      ],
+      "size": [
+        210,
+        100
+      ],
+      "label": "Habr",
+      "details": [
+        "RSS / pubDate",
+        "Ограниченная лента"
+      ],
+      "color": "#64748b"
     }
   ],
   "connections": [
-    { "id": "panel-run", "from": "panel", "to": "orchestrator", "label": "запуск", "variant": "emphasis", "labelDy": 22 },
-    { "id": "orch-result", "from": "orchestrator", "to": "panel", "label": "результат", "labelDy": -22 },
-    { "id": "orch-mail", "from": "orchestrator", "to": "notifier", "label": "почта выкл", "variant": "dashed", "fromSide": "top", "toSide": "right", "via": [[530, 36], [1048, 36], [1048, 463]], "labelAt": [1112, 250] },
-    { "id": "orch-search", "from": "orchestrator", "to": "scraper", "label": "темы и даты", "variant": "emphasis", "labelDx": -46, "labelDy": 28 },
-    { "id": "search-accepted", "from": "scraper", "to": "orchestrator", "label": "принятые", "labelDx": 42 },
-    { "id": "search-archive", "from": "scraper", "to": "archiveAgent", "label": "fetch", "labelDy": 22 },
-    { "id": "archive-items", "from": "archiveAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
-    { "id": "search-arxiv", "from": "scraper", "to": "arxivAgent", "label": "fetch", "labelDy": 22 },
-    { "id": "arxiv-items", "from": "arxivAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
-    { "id": "search-openalex", "from": "scraper", "to": "openalexAgent", "label": "fetch", "labelDy": 22 },
-    { "id": "openalex-items", "from": "openalexAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
-    { "id": "search-habr", "from": "scraper", "to": "habrAgent", "label": "fetch", "labelDy": 22 },
-    { "id": "habr-items", "from": "habrAgent", "to": "scraper", "label": "записи", "labelDy": -22 },
-    { "id": "search-check", "from": "scraper", "to": "validator", "label": "запись", "variant": "emphasis", "labelDx": -48, "labelDy": 28 },
-    { "id": "check-answer", "from": "validator", "to": "scraper", "label": "да или нет", "labelDx": 58 },
-    { "id": "orch-text", "from": "orchestrator", "to": "summarizer", "label": "текст", "labelDy": -22 },
-    { "id": "summary-back", "from": "summarizer", "to": "orchestrator", "label": "резюме", "labelDy": 22 }
-  ],
-  "cards": [
     {
-      "dot": "cyan",
-      "title": "Запуск",
-      "items": [
-        "Панель передаёт темы, источники и диапазон дат",
-        "Оркестратор проводит один цикл обработки"
+      "id": "ui-run",
+      "from": "panel",
+      "to": "orchestrator",
+      "points": [
+        [
+          310,
+          165
+        ],
+        [
+          410,
+          165
+        ]
+      ],
+      "label": "цикл",
+      "labelAt": [
+        324,
+        151
       ]
     },
     {
-      "dot": "emerald",
-      "title": "Поиск",
-      "items": [
-        "Скрапер вызывает fetch и получает записи назад",
-        "В записи есть название, ссылка и аннотация"
+      "id": "summary",
+      "from": "orchestrator",
+      "to": "summarizer",
+      "points": [
+        [
+          710,
+          165
+        ],
+        [
+          810,
+          165
+        ]
+      ],
+      "label": "текст",
+      "labelAt": [
+        729,
+        151
       ]
     },
     {
-      "dot": "violet",
-      "title": "Проверка и резюме",
-      "items": [
-        "Валидатор отвечает скраперу: тема есть или нет",
-        "Резюме возвращается оркестратору и затем на панель"
+      "id": "notify",
+      "from": "summarizer",
+      "to": "notifier",
+      "points": [
+        [
+          1110,
+          165
+        ],
+        [
+          1180,
+          165
+        ]
+      ],
+      "label": "CLI",
+      "labelAt": [
+        1129,
+        151
+      ]
+    },
+    {
+      "id": "mcp-link",
+      "from": "client",
+      "to": "mcp",
+      "points": [
+        [
+          310,
+          365
+        ],
+        [
+          410,
+          365
+        ]
+      ],
+      "label": "stdio",
+      "labelAt": [
+        324,
+        351
+      ]
+    },
+    {
+      "id": "mcp-service",
+      "from": "mcp",
+      "to": "service",
+      "points": [
+        [
+          710,
+          365
+        ],
+        [
+          810,
+          365
+        ]
+      ],
+      "label": "tools",
+      "labelAt": [
+        728,
+        351
+      ]
+    },
+    {
+      "id": "orchestrator-search",
+      "from": "orchestrator",
+      "to": "scraper",
+      "points": [
+        [
+          560,
+          215
+        ],
+        [
+          560,
+          270
+        ],
+        [
+          760,
+          270
+        ],
+        [
+          760,
+          460
+        ],
+        [
+          560,
+          460
+        ],
+        [
+          560,
+          500
+        ]
+      ],
+      "label": "поиск / ответ",
+      "labelAt": [
+        590,
+        258
+      ]
+    },
+    {
+      "id": "service-search",
+      "from": "service",
+      "to": "scraper",
+      "points": [
+        [
+          810,
+          385
+        ],
+        [
+          785,
+          385
+        ],
+        [
+          785,
+          475
+        ],
+        [
+          635,
+          475
+        ],
+        [
+          635,
+          500
+        ]
+      ],
+      "label": "",
+      "labelAt": [
+        810,
+        385
+      ]
+    },
+    {
+      "id": "mcp-summary",
+      "from": "service",
+      "to": "summarizer",
+      "points": [
+        [
+          960,
+          315
+        ],
+        [
+          960,
+          215
+        ]
+      ],
+      "label": "summarize_text",
+      "labelAt": [
+        976,
+        270
+      ]
+    },
+    {
+      "id": "validate",
+      "from": "scraper",
+      "to": "validator",
+      "points": [
+        [
+          710,
+          550
+        ],
+        [
+          810,
+          550
+        ]
+      ],
+      "label": "проверка",
+      "labelAt": [
+        720,
+        536
+      ]
+    },
+    {
+      "id": "fetch-europepmc",
+      "from": "scraper",
+      "to": "europepmc",
+      "points": [
+        [
+          560,
+          600
+        ],
+        [
+          560,
+          680
+        ],
+        [
+          145,
+          680
+        ],
+        [
+          145,
+          745
+        ]
+      ],
+      "label": "",
+      "labelAt": [
+        560,
+        600
+      ]
+    },
+    {
+      "id": "fetch-minzdrav",
+      "from": "scraper",
+      "to": "minzdrav",
+      "points": [
+        [
+          560,
+          600
+        ],
+        [
+          560,
+          680
+        ],
+        [
+          375,
+          680
+        ],
+        [
+          375,
+          745
+        ]
+      ],
+      "label": "",
+      "labelAt": [
+        560,
+        600
+      ]
+    },
+    {
+      "id": "fetch-archive",
+      "from": "scraper",
+      "to": "archive",
+      "points": [
+        [
+          560,
+          600
+        ],
+        [
+          560,
+          680
+        ],
+        [
+          605,
+          680
+        ],
+        [
+          605,
+          745
+        ]
+      ],
+      "label": "",
+      "labelAt": [
+        560,
+        600
+      ]
+    },
+    {
+      "id": "fetch-arxiv",
+      "from": "scraper",
+      "to": "arxiv",
+      "points": [
+        [
+          560,
+          600
+        ],
+        [
+          560,
+          680
+        ],
+        [
+          835,
+          680
+        ],
+        [
+          835,
+          745
+        ]
+      ],
+      "label": "",
+      "labelAt": [
+        560,
+        600
+      ]
+    },
+    {
+      "id": "fetch-openalex",
+      "from": "scraper",
+      "to": "openalex",
+      "points": [
+        [
+          560,
+          600
+        ],
+        [
+          560,
+          680
+        ],
+        [
+          1065,
+          680
+        ],
+        [
+          1065,
+          745
+        ]
+      ],
+      "label": "",
+      "labelAt": [
+        560,
+        600
+      ]
+    },
+    {
+      "id": "fetch-habr",
+      "from": "scraper",
+      "to": "habr",
+      "points": [
+        [
+          560,
+          600
+        ],
+        [
+          560,
+          680
+        ],
+        [
+          1295,
+          680
+        ],
+        [
+          1295,
+          745
+        ]
+      ],
+      "label": "",
+      "labelAt": [
+        560,
+        600
       ]
     }
+  ],
+  "notes": [
+    "Стрелки — вызовы; записи, диагностические сообщения и резюме возвращаются вызывающему модулю.",
+    "КР: описание карточки ≠ резюме полного текста. Происхождение, точность даты и fallback видны пользователю.",
+    "UI не раскрывает секреты / общий журнал и не меняет серверную конфигурацию. MCP не является URL Streamlit."
   ]
 }

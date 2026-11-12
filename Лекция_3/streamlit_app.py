@@ -1,381 +1,243 @@
-# streamlit_app.py
-"""Streamlit-интерфейс мульти-агентного трекера публикаций archive.org.
+"""Public-safe Streamlit UI. Settings/history are session-local, secrets server-owned."""
 
-Возможности:
-- Настройки запуска находятся в боковой панели, провайдеры модели — на отдельной вкладке.
-- Кнопка ручного запуска одного цикла обработки (поиск → извлечение текста → резюме).
-- Найденные публикации и их резюме выводятся прямо в интерфейс.
-- Схема агентов открывается на отдельной вкладке.
-- Отправка на почту в тестовом режиме отключена.
-"""
-
-import subprocess
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-# Импорт основной функции обработки из main.py (файлы лежат в одной папке).
 from main import process_items
-from summarizer import llm_unavailable_message
 from scraper import SOURCE_NAMES
-from utils import HISTORY_PATH, get_history, load_config, resolve_date_range, save_model_settings
+from summarizer import llm_unavailable_message, normalize_engine, resolve_llm
+from utils import load_config, resolve_date_range
+from validation import clean_topics
 
-PROVIDER_LABELS = {
-    "sumy": "Sumy",
-    "ollama": "Ollama",
-    "openai": "OpenAI-совместимый",
-}
-PROVIDER_DEFAULTS = {
-    "ollama": {
-        "base_url": "http://localhost:11434/v1",
-        "model": "qwen2.5:7b",
-        "api_key_env": "",
-    },
-    "openai": {
-        "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4o-mini",
-        "api_key_env": "OPENAI_API_KEY",
-    },
+PROVIDER_LABELS = {"sumy": "Локальный LSA (без LLM)", "ollama": "Ollama", "openai": "OpenAI-совместимый API"}
+METHOD_LABELS = {
+    "sumy_lsa": "Sumy LSA / NLTK",
+    "sumy_lsa_regex": "Sumy LSA / автономный токенизатор",
+    "first_sentences": "Первые предложения (резервный вариант)",
+    "metadata_only": "Описание метаданных, не резюме КР",
+    "none": "Не построено",
 }
 
-
-def _drafts_from_config(cfg: dict) -> dict:
-    stored = cfg.get("providers") or {}
-    llm = cfg.get("llm") or {}
-    active = str(cfg.get("summarizer", "sumy")).strip().lower()
-    drafts = {}
-    for name, defaults in PROVIDER_DEFAULTS.items():
-        draft = dict(defaults)
-        saved = stored.get(name)
-        source = saved if isinstance(saved, dict) and saved else (llm if active == name else {})
-        for key in ("base_url", "model", "api_key_env"):
-            if source.get(key):
-                draft[key] = source[key]
-        drafts[name] = draft
-    return drafts
-
-
-def _field(name: str, field: str) -> str:
-    key = f"{field}_{name}"
-    if key in st.session_state:
-        return str(st.session_state[key] or "")
-    return str(st.session_state["provider_drafts"][name].get(field) or "")
-
-
-def _active_llm() -> dict:
-    name = st.session_state["provider"]
-    if name == "sumy":
-        return {}
-    data = {
-        "base_url": _field(name, "base_url").strip(),
-        "model": _field(name, "model").strip(),
-        "api_key_env": _field(name, "api_key_env").strip(),
-    }
-    secret = _field(name, "api_key").strip()
-    if secret:
-        data["api_key"] = secret
-    return data
-
-
-def _collect_providers() -> dict:
-    providers = {}
-    for name in PROVIDER_DEFAULTS:
-        entry = {
-            "base_url": _field(name, "base_url").strip(),
-            "model": _field(name, "model").strip(),
-        }
-        env_name = _field(name, "api_key_env").strip()
-        if env_name:
-            entry["api_key_env"] = env_name
-        providers[name] = entry
-    return providers
-
-
-def _provider_input(label: str, name: str, field: str, **kwargs):
-    key = f"{field}_{name}"
-    if key not in st.session_state:
-        st.session_state[key] = st.session_state["provider_drafts"][name].get(field) or ""
-    st.text_input(label, key=key, **kwargs)
-
-st.set_page_config(
-    page_title="Трекер публикаций",
-    page_icon="📚",
-    layout="wide",
-)
-
+st.set_page_config(page_title="Трекер медицинских публикаций", page_icon="📚", layout="wide")
 cfg = load_config()
-if "provider_drafts" not in st.session_state:
-    st.session_state["provider_drafts"] = _drafts_from_config(cfg)
-    for name in PROVIDER_DEFAULTS:
-        for field in ("base_url", "model", "api_key_env", "api_key"):
-            st.session_state.pop(f"{field}_{name}", None)
-if "provider" not in st.session_state:
-    saved_provider = str(cfg.get("summarizer", "sumy")).strip().lower()
-    st.session_state["provider"] = saved_provider if saved_provider in PROVIDER_LABELS else "sumy"
+llm_enabled = (cfg.get("ui") or {}).get("enable_llm") is True
+allowed_providers = list(PROVIDER_LABELS) if llm_enabled else ["sumy"]
+if st.session_state.get("provider") not in allowed_providers:
+    configured = normalize_engine(cfg.get("summarizer"))
+    st.session_state["provider"] = configured if configured in allowed_providers else "sumy"
+if "seen_ids" not in st.session_state:
+    st.session_state["seen_ids"] = []
 
-# ---------------------------------------------------------------------------
-# Боковая панель: настройки
-# ---------------------------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ Настройки")
-
-    st.subheader("Поиск")
+    st.header("⚙️ Настройки поиска")
     topics_text = st.text_area(
-        "Темы для отслеживания (по одной в строке)",
+        "Темы (по одной в строке)",
         value="\n".join(cfg.get("topics", [])),
-        height=120,
-        help="По умолчанию берутся из config.yaml. Изменения действуют только в этом сеансе.",
+        height=110,
+        max_chars=2100,
+        help="Не больше 10 тем по 200 символов. Для Europe PMC удобнее английский, для КР — русский или код МКБ-10.",
     )
-    topics = [t.strip() for t in topics_text.splitlines() if t.strip()]
-
-    available_sources = list(SOURCE_NAMES)
-    default_sources = [
-        sid for sid in cfg.get("sources", available_sources) if sid in SOURCE_NAMES
-    ] or available_sources
+    topics_error = None
+    try:
+        topics = clean_topics(topics_text.splitlines())
+    except ValueError as exc:
+        topics, topics_error = [], str(exc)
+    source_ids = list(SOURCE_NAMES)
     sources = st.multiselect(
         "Подключённые источники",
-        options=available_sources,
-        default=default_sources,
-        format_func=lambda sid: SOURCE_NAMES.get(sid, sid),
-        help=(
-            "Какие агенты-источники опрашивать. "
-            "По умолчанию берутся из config.yaml. Изменения действуют только в этом сеансе."
-        ),
+        options=source_ids,
+        default=[sid for sid in cfg.get("sources", ["europepmc", "minzdrav"]) if sid in SOURCE_NAMES],
+        format_func=lambda sid: SOURCE_NAMES[sid],
     )
-
     period = st.selectbox(
         "Диапазон дат",
-        options=["week", "month", "custom"],
-        index=0,
-        format_func=lambda key: {
-            "week": "Неделя",
-            "month": "Месяц",
-            "custom": "Произвольный",
-        }[key],
-        help=(
-            "Ограничение по дате в поисковом запросе. "
-            "Неделя — последние 7 дней, месяц — с этой даты месяц назад. "
-            "Обе границы включаются. По умолчанию — неделя."
-        ),
+        ["week", "month", "custom"],
+        format_func=lambda key: {"week": "Неделя", "month": "Месяц", "custom": "Произвольный"}[key],
     )
     if period == "custom":
-        default_from, default_to = resolve_date_range(preset="week")
+        default_from, default_to = resolve_date_range()
         date_from = st.date_input("С", value=default_from)
         date_to = st.date_input("По", value=default_to)
     else:
         date_from, date_to = resolve_date_range(preset=period)
-        st.caption(
-            f"{date_from.strftime('%d.%m.%Y')} — {date_to.strftime('%d.%m.%Y')}"
-        )
+        st.caption(f"{date_from:%d.%m.%Y} — {date_to:%d.%m.%Y}, обе даты включены")
     dates_ok = bool(date_from and date_to and date_from <= date_to)
     if not dates_ok:
         st.warning("Дата «С» должна быть не позже даты «По».")
-
-    rows = st.slider(
-        "Сколько последних записей запрашивать",
-        min_value=5, max_value=100, value=20, step=5,
-    )
-
+    if "minzdrav" in sources:
+        st.caption(
+            "КР: API фильтруется по дате реестра; зеркало — только по году пересмотра. Для старых КР расширьте период."
+        )
+    rows = st.slider("Записей с каждого источника", 5, 100, 20, step=5)
     st.subheader("Резюме")
     engine = st.session_state["provider"]
-    if engine == "sumy":
-        provider_caption = "Провайдер: Sumy"
-    else:
-        provider_caption = (
-            f"Провайдер: {PROVIDER_LABELS[engine]} · {_field(engine, 'model') or '—'}"
-        )
-    st.caption(f"{provider_caption}. Меняется на вкладке «Провайдеры».")
-    max_sentences = st.slider(
-        "Предложений в резюме",
-        1,
-        10,
-        3,
-        help=(
-            "Сколько предложений вырезать из текста."
-            if engine == "sumy"
-            else "Лимит предложений в инструкции для модели."
-        ),
-    )
-    text_limit = st.slider(
-        "Лимит текста страницы (символов)",
-        min_value=500, max_value=10000, value=2000, step=500,
-        help="Сколько символов текста со страницы передавать агенту-суммаризатору.",
-    )
-
-    st.subheader("История")
-    skip_seen = st.checkbox(
-        "Пропускать уже просмотренные",
-        value=False,
-        help="Если включено – публикации из history.json не показываются повторно.",
-    )
-    save_history = st.checkbox(
-        "Сохранять найденное в историю",
-        value=False,
-        help="Для проверки лучше выключить, чтобы одни и те же результаты можно было получать снова.",
-    )
-    st.caption(f"В истории сейчас записей: **{len(get_history())}**")
-    if st.button("🗑 Очистить историю", use_container_width=True):
-        HISTORY_PATH.write_text("[]", encoding="utf-8")
-        st.success("История очищена.")
-        st.rerun()
-
-    st.subheader("Почта")
-    st.checkbox(
-        "Отправлять резюме на почту",
-        value=False,
-        disabled=True,
-        help="Отключено на время проверки. Результаты выводятся только в интерфейс.",
-    )
-    st.caption(f"Получатель: {cfg.get('email', {}).get('to_address', '—')}")
-
-    st.subheader("Планировщик")
+    st.caption(PROVIDER_LABELS[engine] + ". Выбор — на вкладке «Провайдеры».")
+    max_sentences = st.slider("Предложений в резюме", 1, 10, 3)
+    text_limit = st.slider("Лимит входного текста (символов)", 500, 10000, 2000, step=500)
+    st.subheader("История этого сеанса")
+    skip_seen = st.checkbox("Пропускать просмотренные в этом сеансе", value=False)
+    save_history = st.checkbox("Запоминать обработанные в этом сеансе", value=False)
     st.caption(
-        f"Интервал автоматической проверки: "
-        f"**{cfg.get('check_interval_seconds', 3600)} с** (задаётся в config.yaml)"
+        f"Запомнено: {len(st.session_state['seen_ids'])}. Серверная история не читается и не изменяется."
     )
+    if st.button("Очистить историю сеанса", width="stretch"):
+        st.session_state["seen_ids"] = []
+        st.rerun()
+    st.caption("Почта в веб-интерфейсе отключена. Планировщик запускается отдельно: python main.py.")
 
-    with st.expander("Полная конфигурация (config.yaml)"):
-        safe_cfg = dict(cfg)
-        if "email" in safe_cfg:
-            safe_cfg["email"] = {
-                k: ("••••••" if k == "password" else v)
-                for k, v in safe_cfg["email"].items()
-            }
-        st.json(safe_cfg)
-
-# ---------------------------------------------------------------------------
-# Основная область
-# ---------------------------------------------------------------------------
-st.title("📚 Трекер публикаций")
+st.title("📚 Трекер медицинских публикаций")
 st.caption(
-    "Мульти-агентная система: скрапер → валидатор → извлечение текста → суммаризатор. "
-    "🧪 Тестовый режим: письма не отправляются."
+    "Поиск → лексическая проверка релевантности → резюме. Не медицинская рекомендация и не проверка достоверности публикаций."
 )
-
-tab_search, tab_providers, tab_diagram = st.tabs(
-    ["🔎 Поиск", "🤖 Провайдеры", "🗺 Схема агентов"]
-)
+tab_search, tab_providers, tab_diagram = st.tabs(["🔎 Поиск", "🤖 Провайдеры", "🗺 Схема агентов"])
 
 with tab_search:
+    if topics_error:
+        st.warning(topics_error)
+    if not sources:
+        st.warning("Подключите хотя бы один источник.")
     run = st.button(
         "🚀 Запустить поиск сейчас",
         type="primary",
-        disabled=not topics or not sources or not dates_ok,
+        disabled=bool(topics_error) or not sources or not dates_ok,
     )
-    if not topics:
-        st.warning("Укажите хотя бы одну тему в боковой панели.")
-    elif not sources:
-        st.warning("Подключите хотя бы один источник в боковой панели.")
-    elif not dates_ok:
-        st.warning("В боковой панели дата «С» должна быть не позже даты «По».")
-
     if run:
-        with st.spinner("Агенты работают: ищем публикации и составляем резюме…"):
+        with st.spinner("Ищем публикации и составляем резюме…"):
             try:
-                st.session_state["llm_notice"] = None
-                st.session_state["results"] = process_items(
+                result = process_items(
                     topics=topics,
                     sources=sources,
                     rows=rows,
                     skip_seen=skip_seen,
-                    save_history=save_history,
+                    save_history=False,
+                    session_history=st.session_state["seen_ids"],
                     max_sentences=max_sentences,
                     text_limit=text_limit,
                     engine=engine,
-                    llm=_active_llm() or None,
                     date_from=date_from,
                     date_to=date_to,
-                    send=False,  # пока только вывод в интерфейс
+                    send=False,
                 )
+                st.session_state["results"] = list(result)
+                st.session_state["diagnostics"] = result.diagnostics()
                 st.session_state["run_error"] = None
-                st.session_state["llm_notice"] = process_items.last_llm_notice
-            except Exception as e:
-                st.session_state["results"] = []
-                st.session_state["run_error"] = str(e)
-
+                if save_history:
+                    successful = [
+                        item["identifier"]
+                        for item in result
+                        if item.get("summary") and item.get("summary_method") != "none"
+                    ]
+                    st.session_state["seen_ids"] = list(
+                        dict.fromkeys(st.session_state["seen_ids"] + successful)
+                    )[-1000:]
+            except ValueError as exc:
+                st.session_state["run_error"] = str(exc)
+                st.session_state["results"] = None
+                st.session_state["diagnostics"] = {}
+            except Exception:
+                st.session_state["run_error"] = (
+                    "Не удалось выполнить цикл обработки. Проверьте серверный журнал; секреты и подробности ошибки скрыты."
+                )
+                st.session_state["results"] = None
+                st.session_state["diagnostics"] = {}
     if st.session_state.get("run_error"):
-        st.error(f"Ошибка при обработке: {st.session_state['run_error']}")
-    if st.session_state.get("llm_notice"):
-        st.warning(st.session_state["llm_notice"])
-
-    results = st.session_state.get("results")
-    if results is not None and not st.session_state.get("run_error"):
-        st.header("Найденные публикации")
-        with_summary = sum(1 for r in results if r.get("summary"))
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Найдено", len(results))
-        c2.metric("С резюме", with_summary)
-        c3.metric("Отправлено на почту", 0)
-
-        if not results:
-            st.info(
-                "Новых релевантных публикаций не найдено. "
-                "Попробуйте выключить «Пропускать уже просмотренные» или изменить темы."
+        st.error(st.session_state["run_error"])
+    diagnostics = st.session_state.get("diagnostics", {})
+    for error in diagnostics.get("errors", []):
+        st.error(f"{SOURCE_NAMES.get(error['source'], error['source'])}: {error['message']}")
+    for warning in diagnostics.get("warnings", []):
+        st.warning(f"{SOURCE_NAMES.get(warning['source'], warning['source'])}: {warning['message']}")
+    statuses = diagnostics.get("source_statuses", {})
+    if statuses:
+        labels = {"ok": "доступен", "partial": "неполные данные / ограничения", "error": "ошибка"}
+        st.caption(
+            " · ".join(
+                f"{SOURCE_NAMES.get(sid, sid)}: {labels.get(status, status)}"
+                for sid, status in statuses.items()
             )
+        )
+    results = st.session_state.get("results")
+    if results is None:
+        if not st.session_state.get("run_error"):
+            st.info("Нажмите «Запустить поиск сейчас», чтобы выполнить один цикл обработки.")
+    else:
+        st.header("Результаты поиска")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Записей", len(results))
+        c2.metric(
+            "С резюме текста",
+            sum(bool(r.get("summary")) and r.get("summary_method") != "metadata_only" for r in results),
+        )
+        c3.metric(
+            "Карточек КР (метаданные)", sum(r.get("summary_method") == "metadata_only" for r in results)
+        )
+        if not results:
+            if diagnostics.get("errors"):
+                st.warning(
+                    "Результатов нет, но были ошибки источников. Это не доказывает отсутствие публикаций."
+                )
+            else:
+                st.info(
+                    "Подходящих записей в диапазоне не найдено. Попробуйте изменить тему, расширить даты или выключить пропуск просмотренных."
+                )
         else:
-            tab_cards, tab_table = st.tabs(["🗂 Карточки", "📋 Таблица"])
-            with tab_cards:
-                for i, r in enumerate(results, start=1):
-                    title = r.get("title") or "(без названия)"
-                    if isinstance(title, list):
-                        title = " ".join(title)
-                    with st.expander(f"{i}. {title}", expanded=i <= 3):
-                        src = SOURCE_NAMES.get(r.get("source"), r.get("source") or "—")
-                        st.markdown(f"🔗 [{r['url']}]({r['url']})")
-                        st.markdown(f"**Источник:** {src}")
-                        st.markdown(f"**Идентификатор:** `{r['identifier']}`")
-                        st.markdown("**Резюме:**")
-                        if r.get("summary"):
-                            st.write(r["summary"])
-                        else:
-                            st.caption("Резюме отсутствует.")
-                        st.caption(f"Статус: {r.get('status', '')}")
-            with tab_table:
-                df = pd.DataFrame(results).rename(
+            cards, table = st.tabs(["🗂 Карточки", "📋 Таблица"])
+            with cards:
+                for index, item in enumerate(results, 1):
+                    source = SOURCE_NAMES.get(item.get("source"), item.get("source", "—"))
+                    with st.expander(
+                        f"{index}. {source} · {item.get('published') or 'дата неизвестна'}",
+                        expanded=index <= 3,
+                    ):
+                        # External titles/summaries are plain text, not executable Markdown/HTML.
+                        st.text(item.get("title") or "Без названия")
+                        st.link_button("Открыть запись источника ↗", item["url"])
+                        st.caption("ID: " + item["identifier"])
+                        if item.get("authors"):
+                            st.text("Авторы: " + item["authors"])
+                        if item.get("provenance_notice"):
+                            st.info(item["provenance_notice"])
+                        method = item.get("summary_method", "none")
+                        st.markdown(
+                            "**Описание карточки (не резюме КР):**"
+                            if method == "metadata_only"
+                            else "**Резюме текста:**"
+                        )
+                        st.text(item.get("summary") or "Резюме отсутствует.")
+                        st.caption("Метод: " + METHOD_LABELS.get(method, method))
+                        if item.get("summary_notice"):
+                            st.caption(item["summary_notice"])
+                        st.caption("Статус: " + item.get("status", ""))
+            with table:
+                frame = pd.DataFrame(results).rename(
                     columns={
                         "source": "Источник",
-                        "identifier": "Идентификатор",
+                        "identifier": "ID",
                         "title": "Название",
                         "url": "Ссылка",
-                        "summary": "Резюме",
+                        "published": "Дата / год",
+                        "summary": "Резюме / описание",
+                        "summary_method": "Метод",
+                        "provenance": "Происхождение",
                         "status": "Статус",
                     }
                 )
-                if "Источник" in df.columns:
-                    df["Источник"] = df["Источник"].map(
-                        lambda sid: SOURCE_NAMES.get(sid, sid)
-                    )
+                frame["Источник"] = frame["Источник"].map(lambda sid: SOURCE_NAMES.get(sid, sid))
                 st.dataframe(
-                    df,
-                    use_container_width=True,
+                    frame,
+                    width="stretch",
                     hide_index=True,
                     column_config={"Ссылка": st.column_config.LinkColumn("Ссылка")},
                 )
-    elif results is None:
-        st.info("Нажмите «Запустить поиск сейчас», чтобы агенты выполнили один цикл обработки.")
-
-    with st.expander("📜 Последние записи журнала"):
-        log_path = Path(__file__).parent / "main.log"
-        if log_path.exists():
-            try:
-                tail = subprocess.check_output(["tail", "-n", "20", str(log_path)])
-                st.text(tail.decode())
-            except Exception as exc:
-                st.warning(f"Не удалось прочитать файл журнала: {exc}")
-        else:
-            st.caption("Файл журнала не найден — записи выводятся в терминал, где запущен Streamlit.")
 
 with tab_providers:
-    st.header("Провайдеры модели")
-    st.caption(
-        "Выбранный провайдер строит резюме в этом сеансе сразу. "
-        "Планировщик читает config.yaml после сохранения."
-    )
+    st.header("Провайдеры резюме")
     st.radio(
         "Активный провайдер",
-        options=list(PROVIDER_LABELS),
+        allowed_providers,
         format_func=lambda key: PROVIDER_LABELS[key],
         horizontal=True,
         key="provider",
@@ -383,50 +245,33 @@ with tab_providers:
     current = st.session_state["provider"]
     if current == "sumy":
         st.info(
-            "Sumy строит резюме алгоритмом LSA на этой машине и не вызывает языковую модель."
+            "Локальный Sumy LSA поддерживает английский и русский текст. Если данных NLTK нет, используется автономный токенизатор. При сбое LSA показываются первые предложения с явной пометкой."
         )
     else:
-        _provider_input("Адрес API", current, "base_url")
-        _provider_input("Модель", current, "model")
-        _provider_input(
-            "Переменная окружения с ключом",
-            current,
-            "api_key_env",
-            help="Для Ollama поле можно оставить пустым. Сам ключ в файл не записывается.",
-        )
-        _provider_input(
-            "Ключ для этого сеанса",
-            current,
-            "api_key",
-            type="password",
-            help="Попадает только в текущий процесс. В config.yaml записывается имя переменной.",
-        )
+        preset = resolve_llm(cfg, current)
+        st.text("Серверная модель: " + str(preset.get("model") or "не задана"))
         if st.button("Проверить подключение", key="check_provider"):
-            notice = llm_unavailable_message(_active_llm(), with_fallback=False)
-            model_name = st.session_state.get(f"model_{current}", "")
-            st.session_state["provider_check"] = notice or f"Сервер отвечает. Модель: {model_name}."
-            st.session_state["provider_check_ok"] = notice is None
-            st.session_state["provider_check_for"] = current
-        if (
-            st.session_state.get("provider_check_for") == current
-            and st.session_state.get("provider_check")
-        ):
-            if st.session_state.get("provider_check_ok"):
-                st.success(st.session_state["provider_check"])
+            notice = llm_unavailable_message(engine=current, with_fallback=False)
+            if notice:
+                st.warning(notice)
             else:
-                st.warning(st.session_state["provider_check"])
-
-    if st.button("Сохранить в config.yaml", type="primary", key="save_providers"):
-        save_model_settings(st.session_state["provider"], _collect_providers())
-        st.success("Провайдеры сохранены в config.yaml.")
+                st.success(
+                    "API отвечает, авторизация принята, настроенная модель есть в /models. Генерация отдельно не проверялась."
+                )
+    st.caption(
+        "Адрес API, модель и имя переменной с ключом задаются администратором в config.yaml. Ввод URL/ключей и запись серверной конфигурации из браузера запрещены."
+    )
+    if not llm_enabled:
+        st.caption(
+            "LLM отключены в публичном режиме. В доверенной среде администратор может включить ui.enable_llm; для платного API нужна внешняя авторизация и ограничение запросов."
+        )
 
 with tab_diagram:
-    diagram_path = Path(__file__).parent / "diagr" / "agents.html"
-    if not diagram_path.is_file():
-        st.warning("Файл схемы diagr/agents.html не найден.")
+    st.caption(
+        "Streamlit вызывает Python-пайплайн напрямую. MCP — отдельный stdio-интерфейс для внешнего клиента, не URL этого сайта."
+    )
+    diagram = Path(__file__).parent / "diagr" / "agents.html"
+    if diagram.is_file():
+        components.html(diagram.read_text(encoding="utf-8"), height=920, scrolling=True)
     else:
-        components.html(
-            diagram_path.read_text(encoding="utf-8"),
-            height=900,
-            scrolling=True,
-        )
+        st.info("Схема diagr/agents.html не найдена.")

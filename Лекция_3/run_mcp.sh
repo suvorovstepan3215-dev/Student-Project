@@ -1,6 +1,10 @@
-#!/bin/zsh
-# Запуск MCP-сервера ВСЕГДА из виртуального окружения проекта (.venv).
-# Сервер говорит по stdio (JSON-RPC), поэтому запускать вручную в терминале
-# бессмысленно: его поднимает MCP-host (Cursor, Claude Desktop) или mcp_client.py.
+#!/usr/bin/env sh
+set -eu
 cd "$(dirname "$0")"
-exec .venv/bin/python mcp_server.py "$@"
+PYTHON="${PYTHON:-.venv/bin/python}"
+if [ ! -x "$PYTHON" ]; then
+  printf '%s\n' 'Create .venv and install requirements.txt first.' >&2
+  exit 1
+fi
+# stdout is reserved for MCP JSON-RPC. Diagnostics above go to stderr.
+exec "$PYTHON" mcp_server.py "$@"

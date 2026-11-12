@@ -1,44 +1,32 @@
-# validator.py
-"""Валидатор найденных публикаций.
-
-Проверяет, что в тексте есть все слова темы. Слова делятся по пробелам и
-дефисам, порядок не важен: «medical multi-agent» совпадает с «Multi-Agent
-… Medical». Короткие аббревиатуры вроде RAG ищутся только как целое слово.
-"""
+"""Lexical relevance checks. A keyword match is not medical fact checking."""
 
 import logging
 import re
-from typing import List, Dict, Optional
+
+from nltk.stem.snowball import SnowballStemmer
+
 from utils import extract_text_from_url, token_is_exact, topic_tokens
 
 logger = logging.getLogger("archiv_tracker.validator")
-
-# Источники, которые отдают полную аннотацию вместе с метаданными:
-# если аннотация есть, страницу публикации можно не скачивать.
-# minzdrav — каталог: аннотация синтезируется из названия, кодов МКБ-10 и
-# возраста прямо в агенте, поэтому страницу карточки тоже не качаем.
 SOURCES_WITH_ABSTRACT = {"arxiv", "openalex", "europepmc", "minzdrav"}
+_RUSSIAN = SnowballStemmer("russian")  # Pure algorithm; no NLTK downloads.
 
 
 def _token_in_text(token: str, text: str) -> bool:
-    """Слово темы есть в тексте.
-
-    Аббревиатура должна совпасть целиком. Более длинное слово совпадает
-    и как префикс: ``agent`` находит ``agents`` и ``agentic``.
-    """
-    if token_is_exact(token) or len(re.sub(r"[^A-Za-z0-9]", "", token)) < 4:
+    exact = token_is_exact(token)
+    token = token.casefold().replace("ё", "е")
+    text = text.casefold().replace("ё", "е")
+    length = sum(char.isalnum() for char in token)
+    if exact or length < 4:
         pattern = r"(?<!\w)" + re.escape(token) + r"(?!\w)"
     else:
+        if re.fullmatch(r"[а-я]+", token):
+            token = _RUSSIAN.stem(token)
         pattern = r"(?<!\w)" + re.escape(token) + r"\w*"
-    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+    return re.search(pattern, text) is not None
 
 
-def _find_topic(text: str, topics: List[str]) -> Optional[str]:
-    """Найти первую тему, все слова которой встречаются в тексте.
-
-    Сравнение без учёта регистра. Аббревиатура «RAG» не срабатывает
-    на «storage» или «fragment».
-    """
+def _find_topic(text: str, topics: list[str]) -> str | None:
     for topic in topics:
         tokens = topic_tokens(topic)
         if tokens and all(_token_in_text(token, text) for token in tokens):
@@ -46,51 +34,18 @@ def _find_topic(text: str, topics: List[str]) -> Optional[str]:
     return None
 
 
-def validate_item(item: Dict, topics: List[str]) -> bool:
-    """Возвращает ``True``, если хотя бы одна тема присутствует в заголовке,
-    аннотации или (для archive.org) в тексте страницы.
-
-    Parameters
-    ----------
-    item: dict
-        Должен содержать ключи ``title`` и ``url``; опционально ``abstract``
-        и ``source``.
-    topics: list[str]
-        Список тем (ключевых слов) из конфигурации.
-
-    Returns
-    -------
-    bool
-        ``True`` – релевантно, ``False`` – не релевантно.
-    """
-    ident = item.get("identifier", "?")
-
-    # 1. Заголовок и аннотация вместе: слова темы могут быть в разных полях.
-    head = str(item.get("title", ""))
-    abstract = item.get("abstract") or ""
-    topic = _find_topic(f"{head}\n{abstract}", topics)
-    if topic:
-        logger.info(f"✅ {ident}: тема «{topic}» найдена в заголовке или аннотации")
+def validate_item(item: dict, topics: list[str]) -> bool:
+    title = str(item.get("title") or "")
+    abstract = str(item.get("abstract") or "")
+    if _find_topic(f"{title}\n{abstract}", topics):
         return True
-
-    # 2. arXiv, OpenAlex и Europe PMC отдают аннотацию в метаданных – страницу не загружаем.
-    #    Если аннотации в источнике нет, пробуем текст страницы (шаг 3).
-    if item.get("source") in SOURCES_WITH_ABSTRACT and abstract:
-        logger.info(f"❌ {ident}: темы нет ни в заголовке, ни в аннотации – отклонено")
+    # A metadata-only card must never be validated against navigation/advertising.
+    if item.get("content_kind") == "metadata_only" or (
+        item.get("source") in SOURCES_WITH_ABSTRACT and abstract
+    ):
         return False
-
-    # 3. Для остальных источников проверяем текст страницы.
-    logger.info(f"🔎 {ident}: в заголовке/аннотации тем нет, загружаем страницу…")
     try:
-        text = extract_text_from_url(item["url"])
-        topic = _find_topic(text, topics)
-        if topic:
-            logger.info(f"✅ {ident}: тема «{topic}» найдена в тексте страницы")
-            return True
-    except Exception as e:
-        # игнорируем ошибки извлечения текста
-        logger.warning(f"⚠️ {ident}: ошибка загрузки страницы ({e}) – отклонено")
+        return _find_topic(extract_text_from_url(item["url"]), topics) is not None
+    except Exception:
+        logger.warning("Не удалось проверить текст одной записи.")
         return False
-
-    logger.info(f"❌ {ident}: ни одна тема не найдена – отклонено")
-    return False

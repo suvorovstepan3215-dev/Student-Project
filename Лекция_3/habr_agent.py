@@ -22,18 +22,23 @@
 и добавляет tags.
 """
 
+from __future__ import annotations
+
 import logging
 import re
 import time
-import xml.etree.ElementTree as ET
 from datetime import date
 from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional, Tuple
 
-import requests
 from bs4 import BeautifulSoup
+from defusedxml import ElementTree as ET
+from defusedxml.common import DefusedXmlException
 
+from network import public_requests as requests
+from results import SearchResults, SourceUnavailable, diagnostic
 from utils import load_config, resolve_date_range
+from validation import bounded_int, clean_topics
 
 logger = logging.getLogger("archiv_tracker.habr")
 
@@ -147,7 +152,9 @@ def _to_item(entry: ET.Element, day: Optional[date] = None) -> Optional[Dict]:
     }
 
 
-def parse_feed(content: bytes, date_from: date, date_to: date) -> List[Tuple[date, Dict]]:
+def parse_feed(
+    content: bytes, date_from: date, date_to: date, *, strict: bool = False
+) -> List[Tuple[date, Dict]]:
     """Разобрать ленту RSS и оставить записи внутри диапазона дат.
 
     Возвращает пары ``(дата, запись)``, чтобы вызывающий код мог отсортировать
@@ -156,9 +163,12 @@ def parse_feed(content: bytes, date_from: date, date_to: date) -> List[Tuple[dat
     """
     try:
         root = ET.fromstring(content)
-    except ET.ParseError as exc:
-        logger.error(f"❗ Habr: ответ не похож на RSS ({exc})")
+    except (ET.ParseError, DefusedXmlException) as exc:
+        if strict:
+            raise SourceUnavailable("Habr вернул некорректный или небезопасный RSS.") from exc
         return []
+    if strict and root.tag != "rss":
+        raise SourceUnavailable("Habr вернул не RSS, возможно страницу защиты от ботов.")
     entries = root.findall(".//item")
     pairs: List[Tuple[date, Dict]] = []
     for entry in entries:
@@ -171,9 +181,7 @@ def parse_feed(content: bytes, date_from: date, date_to: date) -> List[Tuple[dat
             continue
         if date_from <= day <= date_to:
             pairs.append((day, item))
-    logger.info(
-        f"📥 Habr: в ленте {len(entries)} записей, в диапазоне дат {len(pairs)}"
-    )
+    logger.info(f"📥 Habr: в ленте {len(entries)} записей, в диапазоне дат {len(pairs)}")
     return pairs
 
 
@@ -188,7 +196,7 @@ def _fetch_topic(topic: str, date_from: date, date_to: date) -> List[Tuple[date,
             f"(возможны антибот-защита или ограничения по частоте)"
         )
     resp.raise_for_status()
-    return parse_feed(resp.content, date_from, date_to)
+    return parse_feed(resp.content, date_from, date_to, strict=True)
 
 
 def fetch(
@@ -203,13 +211,12 @@ def fetch(
     тем склеиваются по идентификатору. Записи возвращаются по убыванию даты
     публикации, не больше ``rows`` штук.
     """
+    wanted = clean_topics(topics)
+    bounded_int(rows, "rows", 1, 100)
     date_from, date_to = resolve_date_range(date_from=date_from, date_to=date_to)
-    wanted = [topic.strip() for topic in topics if topic and topic.strip()]
-    if not wanted:
-        logger.warning("Темы для Habr пустые – поиск не выполняется.")
-        return []
     logger.info(f"🌐 Habr: тем {len(wanted)}, диапазон {date_from} — {date_to} (до {rows} публикаций)")
 
+    errors = []
     by_id: Dict[str, Tuple[date, Dict]] = {}
     for index, topic in enumerate(wanted):
         if index:
@@ -219,7 +226,12 @@ def fetch(
                 by_id.setdefault(item["identifier"], (day, item))
         except Exception as exc:
             # Ошибка по одной теме не должна ронять остальные источники цикла.
-            logger.error(f"❗ Habr («{topic}»): ошибка запроса – {exc}")
+            logger.warning("Habr: запрос одной темы не удался (%s).", type(exc).__name__)
+            errors.append(
+                diagnostic(
+                    SOURCE_ID, "topic_failed", f"Habr: запрос темы №{index + 1} не выполнен; выдача неполная."
+                )
+            )
 
     pairs = sorted(by_id.values(), key=lambda pair: pair[0], reverse=True)
     items = [item for _, item in pairs]
@@ -228,7 +240,7 @@ def fetch(
         items = items[:rows]
     else:
         logger.info(f"📥 Habr: отдано {len(items)}")
-    return items
+    return SearchResults(items, errors=errors)
 
 
 if __name__ == "__main__":
