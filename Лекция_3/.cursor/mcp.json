@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "publication-tracker": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "cwd": "Лекция_3",
+      "env": {
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}

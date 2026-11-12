@@ -15,7 +15,9 @@ from typing import Dict, List, Optional
 
 import archive_agent
 import arxiv_agent
+import europepmc_agent
 import habr_agent
+import minzdrav_agent
 import openalex_agent
 from utils import load_config, get_history, update_history, resolve_date_range
 from validator import validate_item  # валидатор релевантности
@@ -28,6 +30,8 @@ SOURCES = {
     arxiv_agent.SOURCE_ID: arxiv_agent,
     openalex_agent.SOURCE_ID: openalex_agent,
     habr_agent.SOURCE_ID: habr_agent,
+    europepmc_agent.SOURCE_ID: europepmc_agent,
+    minzdrav_agent.SOURCE_ID: minzdrav_agent,
 }
 # Человекочитаемые названия источников (для интерфейса)
 SOURCE_NAMES = {sid: mod.SOURCE_NAME for sid, mod in SOURCES.items()}

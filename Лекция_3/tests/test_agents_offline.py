@@ -4,9 +4,10 @@
 
     python tests/test_agents_offline.py
 
-Проверяется контракт агентов-источников, разбор ответов Habr (RSS) и OpenAlex
-(JSON) на фикстурах, повторяющих форму реальных ответов, работа валидатора с
-этими записями и ASCII-безопасность HTTP-заголовков.
+Проверяется контракт агентов-источников, разбор ответов Habr (RSS), OpenAlex
+и Europe PMC (JSON) на фикстурах, повторяющих форму реальных ответов, работа
+валидатора с этими записями, ASCII-безопасность HTTP-заголовков и сервисный
+слой MCP (каталог, даты, поиск, резюме).
 """
 
 import inspect
@@ -19,9 +20,13 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 import utils  # noqa: E402  (импорт настраивает общий логгер проекта)
+import europepmc_agent  # noqa: E402
 import habr_agent  # noqa: E402
+import mcp_service  # noqa: E402
+import minzdrav_agent  # noqa: E402
 import openalex_agent  # noqa: E402
 import scraper  # noqa: E402
+import summarizer  # noqa: E402
 import validator  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="agents-offline-"))
@@ -98,11 +103,71 @@ OPENALEX_WORK = {
                                 "into": [4], "medical": [5], "multi-agent": [6], "systems": [7]},
 }
 
+# Ответ Europe PMC (resultType=core): HTML-теги в заголовке, аннотация,
+# журнал, даты, цитирования, ключевые слова; вторая запись без PMCID (только PMID).
+EUROPEPMC_RESPONSE = {
+    "version": "6.9",
+    "hitCount": 2,
+    "resultList": {
+        "result": [
+            {
+                "id": "40724673",
+                "source": "MED",
+                "pmid": "40724673",
+                "pmcid": "PMC12294997",
+                "doi": "10.3390/healthcare13141649",
+                "title": "<i>MedScrubCrew</i>: A Medical Multi-Agent Framework for Scheduling",
+                "authorString": "Ruiz Mejia JM, Rawat DB.",
+                "journalInfo": {
+                    "journal": {"title": "Healthcare (Basel, Switzerland)"},
+                    "printPublicationDate": "2025-07-01",
+                },
+                "pubYear": "2025",
+                "abstractText": "Background: medical multi-agent systems need context. "
+                                "Methods: we present a multi-agent framework for scheduling.",
+                "keywordList": {"keyword": ["Multi-agent system", "Clinical Decision Support"]},
+                "citedByCount": 5,
+                "firstPublicationDate": "2025-07-08",
+            },
+            {
+                "id": "42907512",
+                "source": "MED",
+                "pmid": "42907512",
+                "doi": "10.1038/s41586-026-11161-8",
+                "title": "The anatomy of a personal health agent",
+                "authorString": "Heydari AA, Gu K.",
+                "journalInfo": {"journal": {"title": "Nature"}},
+                "pubYear": "2026",
+                "abstractText": "A personal health agent for medical multi-agent care.",
+                "citedByCount": 0,
+                "firstPublicationDate": "2026-01-15",
+            },
+        ]
+    },
+}
+
+# Страница класса МКБ-10 рубрикатора (зеркало minzdrav.clinirec.ru): компактный
+# список КР — ссылки /kr/ с текстом «Название МКБ-10: КОДЫ ВОЗРАСТ ГОД».
+# Четвёртая ссылка ведёт не на КР (не /kr/), её агент должен пропустить.
+MINZDRAV_CLASS_HTML = """<html><body>
+<a href="https://minzdrav.clinirec.ru/kr/bronhialnaya-astma/">Бронхиальная астмаМКБ-10: J45, J45.0, J45.8, J45.9, J46Взрослые, дети2024</a>
+<a href="https://minzdrav.clinirec.ru/kr/askaridoz/">АскаридозМКБ-10: B77Взрослые, дети2025</a>
+<a href="https://minzdrav.clinirec.ru/kr/vich-infekciya-u-vzroslyh/">ВИЧ-инфекция у взрослыхМКБ-10: B20, B21, B22, B23, B24Взрослые2024</a>
+<a href="https://minzdrav.clinirec.ru/mkb-10/kod/a01/">Брюшной тиф (не карточка КР)</a>
+</body></html>"""
+
 
 class FakeResponse:
     def __init__(self, content=b"", status_code=200):
+        if isinstance(content, dict):
+            import json as _json
+            content = _json.dumps(content).encode("utf-8")
         self.content = content if isinstance(content, bytes) else str(content).encode("utf-8")
         self.status_code = status_code
+
+    def json(self):
+        import json as _json
+        return _json.loads(self.content.decode("utf-8"))
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -124,6 +189,7 @@ def fake_requests(responses):
 
 pauses = []
 habr_agent.time = type("FakeTime", (), {"sleep": staticmethod(pauses.append)})()
+europepmc_agent.time = type("FakeTime", (), {"sleep": staticmethod(pauses.append)})()
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +202,11 @@ for sid, module in scraper.SOURCES.items():
           list(signature.parameters) == ["topics", "rows", "date_from", "date_to"],
           str(list(signature.parameters)))
 check("новый источник виден в интерфейсе",
-      "habr.com" in scraper.SOURCE_NAMES.values() and "openalex.org" in scraper.SOURCE_NAMES.values(),
+      "habr.com" in scraper.SOURCE_NAMES.values() and "openalex.org" in scraper.SOURCE_NAMES.values()
+      and "Europe PMC" in scraper.SOURCE_NAMES.values(),
       str(scraper.SOURCE_NAMES))
 check("источники подключены в config.yaml проекта",
-      {"openalex", "habr"} <= set(__import__("yaml").safe_load(
+      {"openalex", "habr", "europepmc"} <= set(__import__("yaml").safe_load(
           (PROJECT_DIR / "config.yaml").read_text(encoding="utf-8")).get("sources", [])))
 
 print("\n2. HTTP-заголовки ASCII-безопасны (регрессия на latin-1)")
@@ -227,9 +294,10 @@ check("запрос: слова темы через пробел, темы че�
       openalex_agent.build_text_query(["medical multi-agent", "clinical decision support"])
       == "medical multi-agent|clinical decision support")
 
-print("\n6. Валидатор на записях Habr и OpenAlex")
+print("\n6. Валидатор на записях Habr, OpenAlex и Europe PMC")
 check("Habr не входит в источники с полной аннотацией",
-      validator.SOURCES_WITH_ABSTRACT == {"arxiv", "openalex"}, str(validator.SOURCES_WITH_ABSTRACT))
+      validator.SOURCES_WITH_ABSTRACT == {"arxiv", "openalex", "europepmc", "minzdrav"},
+      str(validator.SOURCES_WITH_ABSTRACT))
 downloads = []
 validator.extract_text_from_url = lambda url: downloads.append(url) or "текст страницы про multi-agent системы"
 habr_item = dict(first, source="habr")
@@ -248,6 +316,18 @@ check("OpenAlex с аннотацией — страница не скачива
       validator.validate_item(dict(record, source="openalex"), ["medical multi-agent"]) is True
       and downloads == [])
 
+print("\n6.1 Валидатор на карточке Минздрава (русская тема)")
+downloads.clear()
+_mz_entry = {"slug": "sakharnyy-diabet", "title": "Сахарный диабет", "codes": "E10, E11",
+             "age": "Взрослые, дети", "year": 2024,
+             "url": "https://minzdrav.clinirec.ru/kr/sakharnyy-diabet/"}
+_mz_item = dict(minzdrav_agent._to_item(_mz_entry), source="minzdrav")
+check("Минздрав с темой в аннотации — страница не качается",
+      validator.validate_item(_mz_item, ["сахарный диабет"]) is True and downloads == [], str(downloads))
+downloads.clear()
+check("Минздрав без темы — отклонено без скачивания страницы",
+      validator.validate_item(_mz_item, ["онкология"]) is False and downloads == [], str(downloads))
+
 print("\n7. Скрапер: Habr в общем цикле")
 module, calls = fake_requests([FakeResponse(HABR_RSS.encode("utf-8"))])
 habr_agent.requests = module
@@ -261,6 +341,181 @@ check("принята запись с темой в лиде", ids == ["habr:103
 check("записи без темы отклонены",
       "habr:1053878" not in ids and "habr:1025736" not in ids, str(ids))
 check("история пополнена префиксами habr:", utils.get_history() == ids, str(utils.get_history()))
+
+print("\n7.5 Минздрав: разбор страницы класса МКБ-10 и каталог")
+entries = minzdrav_agent._parse_class_page(MINZDRAV_CLASS_HTML)
+check("из 4 ссылок распознано 3 карточки КР (не /kr/ пропущена)", len(entries) == 3, str([e["slug"] for e in entries]))
+asthma = next(e for e in entries if e["slug"] == "bronhialnaya-astma")
+check("название без «МКБ-10:»", asthma["title"] == "Бронхиальная астма", asthma["title"])
+check("коды МКБ-10 выделены", asthma["codes"] == "J45, J45.0, J45.8, J45.9, J46", asthma["codes"])
+check("возраст — составная категория", asthma["age"] == "Взрослые, дети", asthma["age"])
+check("год пересмотра выделен", asthma["year"] == 2024, str(asthma["year"]))
+check("ссылка абсолютная из href", asthma["url"].endswith("/kr/bronhialnaya-astma/"), asthma["url"])
+catalog = minzdrav_agent.build_catalog(pages={"https://minzdrav.clinirec.ru/mkb-10/i/": MINZDRAV_CLASS_HTML})
+check("каталог ключом по slug, 3 записи", set(catalog) == {"bronhialnaya-astma", "askaridoz", "vich-infekciya-u-vzroslyh"}, str(set(catalog)))
+check("запись без «МКБ-10:» не разбирается", minzdrav_agent._parse_entry("Просто текст без кодов", "/kr/x/", "x") is None)
+
+print("\n7.6 Минздрав: fetch по теме и фильтр по году пересмотра")
+_real_get = minzdrav_agent._http_get
+minzdrav_agent._http_get = lambda url: MINZDRAV_CLASS_HTML
+try:
+    found_asthma = minzdrav_agent.fetch(["астма"], rows=10, date_from=date(2015, 1, 1), date_to=date(2026, 12, 31))
+    check("тема «астма» находит Бронхиальную астму (2024)",
+          [i["identifier"] for i in found_asthma] == ["minzdrav:bronhialnaya-astma"],
+          str([i["identifier"] for i in found_asthma]))
+    check("аннотация содержит коды МКБ-10", "МКБ-10:" in found_asthma[0]["abstract"], found_asthma[0]["abstract"][:60])
+    check("дата публикации — 1 января года пересмотра", found_asthma[0]["published"] == "2024-01-01", found_asthma[0]["published"])
+    found_by_code = minzdrav_agent.fetch(["J45"], rows=10, date_from=date(2015, 1, 1), date_to=date(2026, 12, 31))
+    check("поиск по коду МКБ-10 J45 тоже находит астму", found_by_code and found_by_code[0]["identifier"] == "minzdrav:bronhialnaya-astma")
+    found_hiv = minzdrav_agent.fetch(["ВИЧ"], rows=10, date_from=date(2015, 1, 1), date_to=date(2026, 12, 31))
+    check("тема «ВИЧ» находит соответствующую КР", found_hiv and found_hiv[0]["identifier"] == "minzdrav:vich-infekciya-u-vzroslyh")
+    # Фильтр по году пересмотра: астма (2024) вне окна 2025–2026, аскаридоз (2025) — внутри.
+    none = minzdrav_agent.fetch(["астма"], rows=10, date_from=date(2025, 1, 1), date_to=date(2026, 12, 31))
+    check("окно 2025–2026 исключает астму (пересмотр 2024)", none == [], str([i["identifier"] for i in none]))
+    ask = minzdrav_agent.fetch(["аскаридоз"], rows=10, date_from=date(2025, 1, 1), date_to=date(2026, 12, 31))
+    check("окно 2025–2026 включает аскаридоз (пересмотр 2025)", ask and ask[0]["identifier"] == "minzdrav:askaridoz", str([i["identifier"] for i in ask]))
+    empty = minzdrav_agent.fetch(["  ", ""], rows=10, date_from=date(2015, 1, 1), date_to=date(2026, 12, 31))
+    check("пустые темы — без результата", empty == [])
+    # Новое поведение: годовой фильтр только при пересечении границы лет.
+    narrow = minzdrav_agent.fetch(["астма"], rows=10, date_from=date(2024, 1, 1), date_to=date(2024, 12, 31))
+    check("узкое окно в один год не отсекает КР этого года", narrow and narrow[0]["identifier"] == "minzdrav:bronhialnaya-astma", str([i["identifier"] for i in narrow]))
+    week = minzdrav_agent.fetch(["астма"], rows=10, date_from=date(2026, 11, 5), date_to=date(2026, 11, 12))
+    check("пресет «неделя» (один год) не делает выдачу пустой", week and week[0]["identifier"] == "minzdrav:bronhialnaya-astma", str([i["identifier"] for i in week]))
+finally:
+    minzdrav_agent._http_get = _real_get
+
+print("\n8. Europe PMC: разбор JSON")
+ep_record = europepmc_agent._to_item(EUROPEPMC_RESPONSE["resultList"]["result"][0])
+check("идентификатор по PMCID", ep_record["identifier"] == "europepmc:PMC12294997", ep_record["identifier"])
+check("заголовок очищен от HTML", ep_record["title"] == "MedScrubCrew: A Medical Multi-Agent Framework for Scheduling",
+      ep_record["title"])
+check("ссылка — страница статьи Europe PMC", ep_record["url"] == "https://europepmc.org/articles/PMC12294997",
+      ep_record["url"])
+check("авторы, журнал, цитирования, ключевые слова",
+      ep_record["authors"] == "Ruiz Mejia JM, Rawat DB." and ep_record["venue"] == "Healthcare (Basel, Switzerland)"
+      and ep_record["cited_by_count"] == 5 and ep_record["keywords"] == "Multi-agent system, Clinical Decision Support")
+check("дата первой публикации", ep_record["published"] == "2025-07-08", ep_record["published"])
+ep_no_pmcid = europepmc_agent._to_item(EUROPEPMC_RESPONSE["resultList"]["result"][1])
+check("без PMCID — идентификатор по PMID и ссылка на PubMed",
+      ep_no_pmcid["identifier"] == "europepmc:42907512"
+      and ep_no_pmcid["url"] == "https://europepmc.org/article/MED/42907512",
+      f"{ep_no_pmcid['identifier']} {ep_no_pmcid['url']}")
+check("запрос: темы фразами через OR и FIRST_PDATE",
+      europepmc_agent.build_query(["medical multi-agent", "clinical AI"], date(2026, 1, 1), date(2026, 1, 31))
+      == '("medical multi-agent" OR "clinical AI") AND FIRST_PDATE:[2026-01-01 TO 2026-01-31]',
+      europepmc_agent.build_query(["medical multi-agent", "clinical AI"], date(2026, 1, 1), date(2026, 1, 31)))
+
+print("\n9. Europe PMC: fetch с подменой сети")
+module, calls = fake_requests([FakeResponse(EUROPEPMC_RESPONSE)])
+europepmc_agent.requests = module
+found_ep = europepmc_agent.fetch(["medical multi-agent"], rows=5,
+                                 date_from=date(2025, 1, 1), date_to=date(2026, 12, 31))
+check("один запрос к API", len(calls) == 1, f"запросов {len(calls)}")
+check("адрес API Europe PMC", calls[0]["url"] == europepmc_agent.EUROPEPMC_API_URL, calls[0]["url"])
+check("параметры: core, json, лимит", calls[0]["params"].get("resultType") == "core"
+      and calls[0]["params"].get("format") == "json" and calls[0]["params"].get("pageSize") == 5,
+      str(calls[0]["params"]))
+check("сортировка по убыванию даты", [i["published"] for i in found_ep] == ["2026-01-15", "2025-07-08"],
+      str([i["published"] for i in found_ep]))
+check("обе записи отданы", len(found_ep) == 2, str(len(found_ep)))
+module, calls = fake_requests([lambda: FakeResponse(b"", 500)])
+europepmc_agent.requests = module
+try:
+    europepmc_agent.fetch(["medical multi-agent"], rows=5)
+    check("500 после трёх попыток — ошибка", False, "исключение не брошено")
+except RuntimeError:
+    check("500 после трёх попыток — ошибка", len(calls) == 3, f"запросов {len(calls)}")
+check("пустые темы — без запросов к сайту",
+      europepmc_agent.fetch(["  ", ""], rows=5) == [])
+
+print("\n10. MCP: сервисный слой без транспорта")
+catalog = mcp_service.list_sources_catalog()
+catalog_ids = [source["id"] for source in catalog["sources"]]
+check("каталог содержит все источники", set(catalog_ids) == set(scraper.SOURCES), str(catalog_ids))
+check("каталог: у каждого источника название и описание",
+      all(source["name"] and source["description"] for source in catalog["sources"]))
+check("parse_date: валидная дата", mcp_service.parse_date("2026-01-15", "date_from") == date(2026, 1, 15))
+check("parse_date: пусто — None", mcp_service.parse_date("", "date_from") is None
+      and mcp_service.parse_date(None, "date_from") is None)
+try:
+    mcp_service.parse_date("15.01.2026", "date_from")
+    check("parse_date: битая дата — ошибка", False, "исключение не брошено")
+except ValueError:
+    check("parse_date: битая дата — ошибка", True)
+try:
+    mcp_service.resolve_dates("2026-02-01", "2026-01-01")
+    check("resolve_dates: from позже to — ошибка", False, "исключение не брошено")
+except ValueError:
+    check("resolve_dates: from позже to — ошибка", True)
+try:
+    mcp_service.search_source("unknown", ["multi-agent"])
+    check("search_source: неизвестный источник — ошибка", False, "исключение не брошено")
+except ValueError:
+    check("search_source: неизвестный источник — ошибка", True)
+module, calls = fake_requests([FakeResponse(EUROPEPMC_RESPONSE)])
+europepmc_agent.requests = module
+raw = mcp_service.search_source("europepmc", ["medical multi-agent"], rows=5,
+                                date_from="2025-01-01", date_to="2026-12-31")
+check("search_source: сырой поиск Europe PMC", raw["count"] == 2 and raw["source"] == "europepmc",
+      str(raw["count"]))
+check("search_source: даты в ответе", raw["date_from"] == "2025-01-01" and raw["date_to"] == "2026-12-31")
+module, calls = fake_requests([FakeResponse(EUROPEPMC_RESPONSE)])
+europepmc_agent.requests = module
+validator.extract_text_from_url = lambda url: "совсем другой текст"
+checked = mcp_service.search_publications(["medical multi-agent"], sources=["europepmc"], rows=5,
+                                          date_from="2025-01-01", date_to="2026-12-31")
+check("search_publications: валидатор принял обе записи", checked["count"] == 2, str(checked["count"]))
+check("search_publications: история не тронута", utils.get_history() == ids, str(utils.get_history()))
+# Sumy требует данные NLTK (punkt_tab), которых может не быть на чистой машине,
+# поэтому движок подменяем: проверяем логику сервиса, а не сам LSA.
+_real_summarize = mcp_service.summarize
+mcp_service.summarize = lambda text, max_sentences=3, engine="sumy": "Резюме по тексту."
+summary = mcp_service.summarize_text(
+    "Medical multi-agent systems coordinate several agents. "
+    "Each agent handles a narrow task. Together they improve scheduling workflows.", 2)
+mcp_service.summarize = _real_summarize
+check("summarize_text: резюме непустое", bool(summary["summary"]), summary["summary"][:80])
+try:
+    mcp_service.summarize_text("   ", 3)
+    check("summarize_text: пустой текст — ошибка", False, "исключение не брошено")
+except ValueError:
+    check("summarize_text: пустой текст — ошибка", True)
+
+print("\n10.1 Суммаризатор: кириллица и латиница")
+# Кириллица резюмируется первыми предложениями — без Sumy и без данных NLTK.
+_ru = summarizer.summarize(
+    "Сахарный диабет — хроническое заболевание эндокринной системы. "
+    "Требует постоянного контроля уровня глюкозы. Рекомендуются диета и физическая активность.",
+    max_sentences=2,
+)
+check("кириллица резюмируется первыми предложениями", "Сахарный диабет" in _ru and "Требует постоянного" in _ru, _ru[:80])
+check("_has_cyrillic распознаёт кириллицу", summarizer._has_cyrillic("Привет мир") and not summarizer._has_cyrillic("Hello world"))
+# Латиница идёт через LSA; если данных NLTK нет, срабатывает fallback первыми предложениями.
+_en = summarizer.summarize(
+    "Medical multi-agent systems coordinate several specialized agents. "
+    "Together they improve clinical scheduling workflows. Evaluation shows gains.",
+    max_sentences=1,
+)
+check("латиница резюмируется (LSA или fallback, не пусто)", bool(_en), _en[:80])
+
+print("\n11. MCP: регистрация tools на сервере")
+try:
+    import asyncio as _asyncio
+    import mcp_server as _mcp_server
+    _tools = _asyncio.run(_mcp_server.mcp.list_tools())
+    _names = {tool.name for tool in _tools}
+    _expected = {"list_sources", "search_publications", "search_europepmc", "search_openalex",
+                 "search_arxiv", "search_archive", "search_habr", "search_minzdrav", "summarize_text"}
+    check("сервер регистрирует все tools", _names == _expected, str(sorted(_names)))
+    _result = _asyncio.run(_mcp_server.mcp.call_tool("list_sources", {}))
+    import json as _json
+    _payload = _result.structured_content
+    if _payload is None:
+        _payload = _json.loads(_result.content[0].text)
+    check("tool list_sources отвечает каталогом",
+          {s["id"] for s in _payload["sources"]} == set(scraper.SOURCES))
+except ImportError as _exc:
+    check(f"MCP-сервер импортируется (пропуск без пакета mcp: {_exc})", True)
 
 print("\n" + ("ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ" if not FAILURES else f"ПРОВАЛЕНО {len(FAILURES)}: {FAILURES}"))
 sys.exit(1 if FAILURES else 0)

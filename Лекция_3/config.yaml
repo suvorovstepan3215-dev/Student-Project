@@ -2,15 +2,21 @@
 # Configuration for the Multi‑Agent Publication Tracker
 
 # List of keywords or topics to monitor on archiv.org
+# Темы общие для всех источников: английская фраза — для научных баз
+# (Europe PMC, arXiv, OpenAlex, Habr, archive.org), русская — для Рубрикатора
+# КР Минздрава (каталог ищется по названию заболевания или коду МКБ-10).
+# Запись проходит, если любая из тем нашлась в тексте.
 topics:
   - "medical multi-agent"
+  - "сахарный диабет"
 
-# Подключённые источники поиска (по умолчанию). Доступно: archive, arxiv, openalex, habr
+# Подключённые источники поиска (по умолчанию). Доступно: archive, arxiv, openalex, habr, europepmc
 sources:
   - "archive"
   - "arxiv"
   - "openalex"
   - "habr"
+  - "europepmc"
 
 # OpenAlex: письмо для «вежливого» пула и ключ API. Оба поля необязательны —
 # без них запросы идут в общий бесплатный дневной лимит на IP-адрес.
@@ -18,6 +24,19 @@ sources:
 openalex:
   mailto: ""
   api_key: ""
+
+# Europe PMC: письмо для «вежливого» пула. Необязательно — без него запросы
+# идут в общий бесплатный лимит на IP-адрес. Можно задать окружением EUROPEPMC_EMAIL.
+europepmc:
+  email: ""
+
+# Рубрикатор КР Минздрава РФ: агент работает с открытым зеркалом каталога
+# (официальный cr.minzdrav.gov.ru защищён от автообхода и не имеет публичного
+# API). Базовый адрес можно сменить, если зеркало недоступно. По умолчанию
+# источник не включён в активные (исторически это справочник, а не лента),
+# его можно добавить в «Подключённые источники» в интерфейсе или в sources ниже.
+minzdrav:
+  base_url: "https://minzdrav.clinirec.ru"
 
 # Чем строить резюме: sumy, ollama или openai.
 summarizer: sumy
