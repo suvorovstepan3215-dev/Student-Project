@@ -7,6 +7,7 @@ from streamlit.testing.v1 import AppTest
 import main
 import mcp_client
 import mcp_server
+import mcp_service
 import utils
 from results import SearchResults, diagnostic
 from tests.helpers import item
@@ -199,4 +200,61 @@ def test_presentation_tab_is_available(monkeypatch):
     app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
     assert not app.exception
     assert [tab.label for tab in app.tabs][-1] == "Презентация"
-    assert len(app.tabs) == 4
+    assert [tab.label for tab in app.tabs] == ["Поиск", "Провайдеры", "Схема агентов", "MCP", "Презентация"]
+
+
+def _call_mcp_tool(app, tool):
+    next(s for s in app.selectbox if s.key == "mcp_tool").set_value(tool).run()
+    next(b for b in app.button if b.label == "Вызвать инструмент").click().run()
+
+
+def test_mcp_sandbox_lists_sources_offline():
+    app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
+    assert not app.exception
+    assert "MCP" in [tab.label for tab in app.tabs]
+    _call_mcp_tool(app, "list_sources")
+    assert not app.exception
+    assert "europepmc" in next(iter(app.json)).value
+
+
+def test_mcp_sandbox_summarize_text_uses_service(monkeypatch):
+    monkeypatch.setattr(
+        mcp_service,
+        "summarize_text",
+        lambda text, max_sentences=3: {
+            "summary": "SUMMARY_MARK",
+            "method": "sumy_lsa",
+            "notice": "",
+            "max_sentences": max_sentences,
+        },
+    )
+    app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
+    _call_mcp_tool(app, "summarize_text")
+    assert not app.exception and "SUMMARY_MARK" in next(iter(app.json)).value
+
+
+def test_mcp_sandbox_search_publications_uses_same_service(monkeypatch):
+    monkeypatch.setattr(
+        mcp_service,
+        "search_publications",
+        lambda topics, sources=None, rows=20, date_from=None, date_to=None: {
+            "topics": topics,
+            "sources": sources or [],
+            "count": 1,
+            "items": [{"identifier": "X_MARK"}],
+        },
+    )
+    app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
+    _call_mcp_tool(app, "search_publications")
+    assert not app.exception and "X_MARK" in next(iter(app.json)).value
+
+
+def test_mcp_sandbox_validation_error_is_shown_safely(monkeypatch):
+    def explode(topics, sources=None, rows=20, date_from=None, date_to=None):
+        raise ValueError("Поле «topics» должно быть непустым.")
+
+    monkeypatch.setattr(mcp_service, "search_publications", explode)
+    app = AppTest.from_file(str(PROJECT / "streamlit_app.py"), default_timeout=15).run()
+    _call_mcp_tool(app, "search_publications")
+    assert not app.exception
+    assert any("topics" in warning.value for warning in app.warning)

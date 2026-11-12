@@ -1,6 +1,6 @@
 {
   "profile": "streamlit_web",
   "canonical_source": "Лекция_3 (maintained repository copy)",
-  "payload_sha256": "a54734e800478e0a313c7c70131c5c95eb5e59113b67dd076a5ec04b0a30dadb",
+  "payload_sha256": "c418885192c2d826685284e8e660e12412bdca6962f729ea0319f22b15152a5b",
   "regenerate": "python tools/build_variants.py"
 }

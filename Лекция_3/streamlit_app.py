@@ -7,12 +7,25 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+import mcp_service
 import translator
 from main import process_items
 from scraper import SOURCE_NAMES
 from summarizer import llm_unavailable_message, normalize_engine, resolve_llm
 from utils import load_config, resolve_date_range
 from validation import clean_topics
+
+_MCP_TOOLS = {
+    "list_sources": "каталог источников (id, описание, лимиты)",
+    "search_publications": "поиск по нескольким источникам с валидацией",
+    "search_europepmc": "Europe PMC — биомедицинские публикации",
+    "search_openalex": "OpenAlex — открытый граф научных работ",
+    "search_arxiv": "arXiv — препринты",
+    "search_archive": "archive.org — книги и документы",
+    "search_habr": "Habr — русскоязычная лента",
+    "search_minzdrav": "Каталог КР Минздрава РФ (метаданные)",
+    "summarize_text": "резюме текста локально (Sumy LSA)",
+}
 
 PROVIDER_LABELS = {"sumy": "Локальный LSA (без LLM)", "ollama": "Ollama", "openai": "OpenAI-совместимый API"}
 METHOD_LABELS = {
@@ -184,8 +197,8 @@ st.markdown(
 </div>""",
     unsafe_allow_html=True,
 )
-tab_search, tab_providers, tab_diagram, tab_slides = st.tabs(
-    ["Поиск", "Провайдеры", "Схема агентов", "Презентация"]
+tab_search, tab_providers, tab_diagram, tab_mcp, tab_slides = st.tabs(
+    ["Поиск", "Провайдеры", "Схема агентов", "MCP", "Презентация"]
 )
 
 with tab_search:
@@ -408,6 +421,93 @@ with tab_diagram:
         components.html(diagram.read_text(encoding="utf-8"), height=920, scrolling=True)
     else:
         st.info("Схема diagr/agents.html не найдена.")
+
+with tab_mcp:
+    st.caption(
+        "MCP (Model Context Protocol) — stdio-интерфейс для внешних ИИ-клиентов. "
+        "Этот сайт MCP-сервером не является и JSON-RPC по stdio не принимает; "
+        "ниже — живая песочница: те же инструменты и тот же сервисный слой, что в MCP (mcp_service.py), "
+        "с теми же проверками. Запросы search_* ходят в интернет с сервера."
+    )
+    tool = st.selectbox(
+        "Инструмент", _MCP_TOOLS, format_func=lambda key: f"{key} — {_MCP_TOOLS[key]}", key="mcp_tool"
+    )
+    raw_topics = ""
+    rows = None
+    date_from = date_to = None
+    sources = None
+    if tool == "summarize_text":
+        text_for_summary = st.text_area("Текст для резюме", height=140, max_chars=10000)
+        max_sentences = st.slider("Предложений в резюме", 1, 10, 3, key="mcp_max_sentences")
+    elif tool == "list_sources":
+        st.caption("Каталог источников не требует параметров.")
+    else:
+        raw_topics = st.text_area(
+            "Темы (по одной в строке)", value="\n".join(cfg.get("topics", [])), height=80, max_chars=2100
+        )
+        if tool == "search_publications":
+            sources = st.multiselect(
+                "Источники",
+                list(SOURCE_NAMES),
+                default=[
+                    sid
+                    for sid in cfg.get("sources", ["europepmc", "openalex", "minzdrav"])
+                    if sid in SOURCE_NAMES
+                ],
+                format_func=lambda sid: SOURCE_NAMES[sid],
+                key="mcp_sources",
+            )
+        default_from, default_to = resolve_date_range(preset="week")
+        col_from, col_to = st.columns(2)
+        date_from = col_from.date_input("С", value=default_from, key="mcp_date_from")
+        date_to = col_to.date_input("По", value=default_to, key="mcp_date_to")
+        rows = st.slider("Записей с источника", 1, 10, 3, key="mcp_rows")
+    if st.button("Вызвать инструмент", key="mcp_call"):
+        with st.spinner("Вызываем инструмент…"):
+            try:
+                if tool == "list_sources":
+                    result = mcp_service.list_sources_catalog()
+                elif tool == "summarize_text":
+                    result = mcp_service.summarize_text(text_for_summary, max_sentences)
+                elif tool == "search_publications":
+                    topics = clean_topics(raw_topics.splitlines())
+                    result = mcp_service.search_publications(
+                        topics,
+                        sources=sources,
+                        rows=rows,
+                        date_from=date_from.isoformat() if date_from else None,
+                        date_to=date_to.isoformat() if date_to else None,
+                    )
+                else:
+                    topics = clean_topics(raw_topics.splitlines())
+                    result = mcp_service.search_source(
+                        tool.removeprefix("search_"),
+                        topics,
+                        rows=rows,
+                        date_from=date_from.isoformat() if date_from else None,
+                        date_to=date_to.isoformat() if date_to else None,
+                    )
+            except ValueError as exc:
+                st.warning(str(exc))
+            except Exception:
+                st.warning(
+                    "Инструмент не ответил или источник недоступен. Подробности скрыты; попробуйте позже."
+                )
+            else:
+                st.json(result)
+    with st.expander("Как подключить настоящий MCP (для преподавателя, локально)"):
+        st.markdown(
+            "Песочница — не протокол. Настоящий MCP работает по stdio на вашем компьютере:\n\n"
+            "1. Скачайте репозиторий или папку `local_pc` из релиза/клона и выполните `setup.sh` (Linux/macOS) или `setup.ps1` (Windows).\n"
+            "2. Подключите MCP-сервер к клиенту: Atomic Chat, Cursor или Claude Desktop. "
+            "Готовый генератор конфигурации — `local_pc/tools/mcp_config.py` (форматы `mcp` и `atomic`), "
+            "инструкции — `VARIANTS.md` в корне репозитория: "
+            "https://github.com/suvorovstepan3215-dev/Student-Project/blob/main/VARIANTS.md\n"
+            "3. 9 инструментов: `list_sources`, `search_publications`, `search_europepmc`, `search_openalex`, "
+            "`search_arxiv`, `search_archive`, `search_habr`, `search_minzdrav`, `summarize_text`.\n\n"
+            "Из этой страницы MCP недоступен: браузер не может открыть stdio-процесс на чужом сервере. "
+            "Песочница выше — честная замена для оценки поведения инструментов."
+        )
 
 with tab_slides:
     st.caption(

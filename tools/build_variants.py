@@ -34,6 +34,7 @@ PROFILES = {
     "streamlit_web": {
         "source": (
             "main.py", "notifier.py", "streamlit_app.py", "translator.py",
+            "mcp_service.py",
             "diagr/agents.html", "diagr/agents.png", "diagr/presentation.html",
         ),
         "templates": ("README.md", "check_setup.py", "start.sh", "start.ps1"),
