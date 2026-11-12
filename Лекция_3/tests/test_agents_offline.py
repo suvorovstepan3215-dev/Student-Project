@@ -21,7 +21,11 @@ from tests.helpers import END, HABR_XML, START, FakeResponse, ep_payload, ep_rec
 def test_agent_contract(sid, module):
     assert module.SOURCE_ID == sid
     assert module.SOURCE_NAME
-    assert list(inspect.signature(module.fetch).parameters) == ["topics", "rows", "date_from", "date_to"]
+    expected_params = ["topics", "rows", "date_from", "date_to"]
+    if sid == "europepmc":
+        # Экспериментальный выключатель догрузки аннотации из fullTextXML.
+        expected_params.append("fulltext_fallback")
+    assert list(inspect.signature(module.fetch).parameters) == expected_params
     for value in [getattr(module, "USER_AGENT", ""), *getattr(module, "HEADERS", {}).values()]:
         value.encode("latin-1")
 
@@ -247,3 +251,136 @@ if __name__ == "__main__":
     from pathlib import Path
 
     raise SystemExit(pytest.main([str(Path(__file__).resolve().parent), "-q"]))
+
+
+FULLTEXT_XML = b"""<?xml version="1.0"?>
+<!DOCTYPE article [<!ENTITY internal "never-expanded">]>
+<article xmlns:jats="https://jats.nlm.nih.gov">
+  <front>
+    <article-meta>
+      <abstract><p>Diabetes and glycaemic control: abstract from full text.</p></abstract>
+    </article-meta>
+  </front>
+</article>
+"""
+
+
+def _epmc_page(monkeypatch, record):
+    monkeypatch.setattr(ep, "_api_get", lambda params: ep_payload([record]))
+
+
+def _forbid_fulltext(monkeypatch):
+    def get(*args, **kwargs):
+        assert "fullTextXML" not in str(args[0] if args else kwargs.get("url", ""))
+        raise AssertionError("fullTextXML must not be requested")
+
+    monkeypatch.setattr(ep, "requests", SimpleNamespace(get=get))
+
+
+def test_fulltext_fallback_is_off_by_default(monkeypatch):
+    monkeypatch.delenv("EUROPEPMC_FULLTEXT_FALLBACK", raising=False)
+    monkeypatch.setattr(ep, "load_config", lambda: {"europepmc": {}})
+    _epmc_page(monkeypatch, ep_record(abstractText="", isOpenAccess="Y"))
+    _forbid_fulltext(monkeypatch)
+    result = ep.fetch(["diabetes"], 1, START, END)
+    assert result[0]["abstract"] == "" and "abstract_origin" not in result[0]
+
+
+def test_fulltext_fallback_loads_abstract_from_xml(monkeypatch):
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        if "fullTextXML" in url:
+            return FakeResponse(content=FULLTEXT_XML, headers={"Content-Type": "application/xml"})
+        raise AssertionError("unexpected url " + url)
+
+    monkeypatch.setattr(ep, "load_config", lambda: {"europepmc": {}})
+    monkeypatch.delenv("EUROPEPMC_FULLTEXT_FALLBACK", raising=False)
+    _epmc_page(monkeypatch, ep_record(abstractText="", isOpenAccess="Y"))
+    monkeypatch.setattr(ep, "requests", SimpleNamespace(get=get))
+    result = ep.fetch(["diabetes"], 1, START, END, fulltext_fallback=True)
+    assert result[0]["abstract"] == "Diabetes and glycaemic control: abstract from full text."
+    assert result[0]["abstract_origin"] == "fulltext_xml"
+    assert any("MED/1" in url for url in calls)
+
+
+def test_fulltext_fallback_skips_non_open_access(monkeypatch):
+    _epmc_page(monkeypatch, ep_record(abstractText="", isOpenAccess="N"))
+    _forbid_fulltext(monkeypatch)
+    monkeypatch.setattr(ep, "load_config", lambda: {"europepmc": {}})
+    result = ep.fetch(["diabetes"], 1, START, END, fulltext_fallback=True)
+    assert result[0]["abstract"] == ""
+
+
+def test_fulltext_fallback_xml_without_abstract_keeps_record(monkeypatch):
+    xml = b"<article><front><article-meta><title-group><article-title>x</article-title></title-group></article-meta></front></article>"
+
+    def get(url, **kwargs):
+        return FakeResponse(content=xml, headers={"Content-Type": "application/xml"})
+
+    monkeypatch.setattr(ep, "load_config", lambda: {"europepmc": {}})
+    _epmc_page(monkeypatch, ep_record(abstractText="", isOpenAccess="Y"))
+    monkeypatch.setattr(ep, "requests", SimpleNamespace(get=get))
+    result = ep.fetch(["diabetes"], 1, START, END, fulltext_fallback=True)
+    assert result[0]["abstract"] == "" and not result.warnings
+
+
+def test_fulltext_fallback_network_failure_warns_but_keeps_record(monkeypatch):
+    def get(url, **kwargs):
+        return FakeResponse(status=500)
+
+    monkeypatch.setattr(ep, "load_config", lambda: {"europepmc": {}})
+    _epmc_page(monkeypatch, ep_record(abstractText="", isOpenAccess="Y"))
+    monkeypatch.setattr(ep, "requests", SimpleNamespace(get=get))
+    result = ep.fetch(["diabetes"], 1, START, END, fulltext_fallback=True)
+    assert result[0]["title"] and result[0]["abstract"] == ""
+    assert any(warning["code"] == "fulltext_failed" for warning in result.warnings)
+
+
+def test_fulltext_fallback_env_switch_enables(monkeypatch):
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        return FakeResponse(content=FULLTEXT_XML, headers={"Content-Type": "application/xml"})
+
+    monkeypatch.setenv("EUROPEPMC_FULLTEXT_FALLBACK", "1")
+    monkeypatch.setattr(ep, "load_config", lambda: {"europepmc": {}})
+    _epmc_page(monkeypatch, ep_record(abstractText="", isOpenAccess="Y"))
+    monkeypatch.setattr(ep, "requests", SimpleNamespace(get=get))
+    result = ep.fetch(["diabetes"], 1, START, END)
+    assert result[0]["abstract_origin"] == "fulltext_xml"
+
+
+def test_fulltext_fallback_config_switch_enables(monkeypatch):
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        return FakeResponse(content=FULLTEXT_XML, headers={"Content-Type": "application/xml"})
+
+    monkeypatch.delenv("EUROPEPMC_FULLTEXT_FALLBACK", raising=False)
+    monkeypatch.setattr(ep, "load_config", lambda: {"europepmc": {"fulltext_abstract_fallback": True}})
+    _epmc_page(monkeypatch, ep_record(abstractText="", isOpenAccess="Y"))
+    monkeypatch.setattr(ep, "requests", SimpleNamespace(get=get))
+    result = ep.fetch(["diabetes"], 1, START, END)
+    assert result[0]["abstract_origin"] == "fulltext_xml"
+
+
+def test_abstract_from_xml_does_not_expand_doctype_entities():
+    xml = '<!DOCTYPE article [<!ENTITY boom "x">]><article><front><article-meta><abstract><p>Diabetes &amp; care</p></abstract></article-meta></front></article>'
+    assert ep._abstract_from_xml(xml) == "Diabetes & care"
+
+
+def test_fetch_source_threads_flag_only_to_europepmc(monkeypatch):
+    captured = {}
+
+    def fake(topics, rows=20, date_from=None, date_to=None, fulltext_fallback=None):
+        captured["fulltext_fallback"] = fulltext_fallback
+        return SearchResults()
+
+    monkeypatch.setattr(scraper.SOURCES["europepmc"], "fetch", fake)
+    monkeypatch.setattr(scraper, "validate_item", lambda item, topics: True)
+    scraper.fetch_source("europepmc", ["diabetes"], 1, START, END, europepmc_fulltext_fallback=True)
+    assert captured["fulltext_fallback"] is True

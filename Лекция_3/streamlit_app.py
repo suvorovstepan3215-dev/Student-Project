@@ -173,6 +173,13 @@ with st.sidebar:
             "КР: API фильтруется по дате реестра; зеркало — только по году пересмотра. Для старых КР расширьте период."
         )
     rows = st.slider("Записей с каждого источника", 5, 100, 20, step=5)
+    fulltext_fallback = st.checkbox(
+        "Эксперимент: догружать пустую аннотацию из открытого полного текста Europe PMC",
+        value=False,
+        key="exp_fulltext_fallback",
+        help="Только Europe PMC и только open-access записи: если аннотация в метаданных пуста, "
+        "приложение берёт <abstract> из fullTextXML (JATS). Дополнительный запрос на каждую такую запись.",
+    )
     st.subheader("Резюме")
     engine = st.session_state["provider"]
     st.caption(PROVIDER_LABELS[engine] + ". Выбор — на вкладке «Провайдеры».")
@@ -227,6 +234,7 @@ with tab_search:
                     date_from=date_from,
                     date_to=date_to,
                     send=False,
+                    europepmc_fulltext_fallback=fulltext_fallback,
                 )
                 st.session_state["results"] = list(result)
                 st.session_state["diagnostics"] = result.diagnostics()
@@ -312,6 +320,10 @@ with tab_search:
                         st.caption("ID: " + item["identifier"])
                         if item.get("authors"):
                             st.text("Авторы: " + item["authors"])
+                        if item.get("abstract_origin") == "fulltext_xml":
+                            st.caption(
+                                "Аннотация догружена из открытого полного текста (экспериментальный режим)."
+                            )
                         if item.get("provenance_notice"):
                             st.info(item["provenance_notice"])
                         method = item.get("summary_method", "none")
