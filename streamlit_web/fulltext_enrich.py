@@ -8,9 +8,14 @@
 
 Что делает: для записей Europe PMC с пустой аннотацией ("No abstract
 provided") берёт <abstract> из JATS XML открытого полного текста
-(/rest/{source}/{id}/fullTextXML; сначала PMC/{pmcid}, запасной вариант
-MED/{pmid}) и заново строит резюме. Догруженная аннотация помечается
+(/rest/{pmcid}/fullTextXML, например /rest/PMC13753175/fullTextXML)
+и заново строит резюме. Догруженная аннотация помечается
 ``abstract_origin="fulltext_xml"``; результат показывается той же карточкой.
+
+Почему только PMCID: этот эндпоинт отдаёт JATS XML лишь для OA-подмножества
+PubMed Central; путей вида /rest/PMC/{pmcid}/fullTextXML, /rest/MED/{pmid}/fullTextXML
+или /rest/{pmid}/fullTextXML у Europe PMC нет (проверены — 404/500).
+Записи без PMCID пропускаются; неудачная догрузка — не ошибка поиска.
 
 Ограничения: догружается не больше MAX_PER_RUN записей за один запуск;
 текст аннотации — не более MAX_ABSTRACT_CHARS; DOCTYPE вырезается до разбора
@@ -32,7 +37,8 @@ from validation import MAX_TEXT_LENGTH
 logger = logging.getLogger("archiv_tracker.fulltext_enrich")
 
 USER_AGENT = "multi-agent-publication-tracker/1.0 (MAS course project)"
-FULLTEXT_XML_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{source}/{record_id}/fullTextXML"
+# Полнотекстовый XML доступен только по PMCID: /rest/{pmcid}/fullTextXML.
+FULLTEXT_XML_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{record_id}/fullTextXML"
 MAX_XML_BYTES = 5 * 1024 * 1024
 MAX_ABSTRACT_CHARS = 15000
 MAX_PER_RUN = 10
@@ -61,24 +67,23 @@ def extract_abstract(xml_text: str) -> str:
 
 
 def fetch_abstract_for_record(*, pmcid: str = "", pmid: str = "") -> str:
-    """Догрузить аннотацию из fullTextXML. Ошибки сети/HTTP всплывают исключением."""
-    pmcid, pmid = str(pmcid or "").strip(), str(pmid or "").strip()
-    candidates = [
-        FULLTEXT_XML_URL.format(source=source, record_id=quote(identifier, safe=""))
-        for source, identifier in (("PMC", pmcid), ("MED", pmid))
-        if identifier
-    ]
-    for url in candidates:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20, max_bytes=MAX_XML_BYTES)
-        resp.raise_for_status()
-        content_type = (resp.headers or {}).get("Content-Type", "").lower()
-        if "html" in content_type:
-            continue
-        body = resp.text if isinstance(resp.text, str) else resp.content.decode("utf-8", "replace")
-        abstract = extract_abstract(body)
-        if abstract:
-            return abstract
-    return ""
+    """Догрузить аннотацию из fullTextXML. Ошибки сети/HTTP всплывают исключением.
+
+    ``pmid`` принимается ради совместимости сигнатур, но самостоятельно не
+    используется: у Europe PMC нет пути fullTextXML по PMID (проверено live —
+    /rest/MED/{pmid}/fullTextXML и /rest/{pmid}/fullTextXML отвечают 404/500).
+    """
+    pmcid = str(pmcid or "").strip()
+    if not pmcid:
+        return ""
+    url = FULLTEXT_XML_URL.format(record_id=quote(pmcid, safe=""))
+    resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20, max_bytes=MAX_XML_BYTES)
+    resp.raise_for_status()
+    content_type = (resp.headers or {}).get("Content-Type", "").lower()
+    if "html" in content_type:
+        return ""
+    body = resp.text if isinstance(resp.text, str) else resp.content.decode("utf-8", "replace")
+    return extract_abstract(body)
 
 
 def _needs_enrichment(item: dict) -> bool:
@@ -86,7 +91,7 @@ def _needs_enrichment(item: dict) -> bool:
         isinstance(item, dict)
         and item.get("source") == "europepmc"
         and not str(item.get("abstract") or "").strip()
-        and bool(str(item.get("pmcid") or "").strip() or str(item.get("pmid") or "").strip())
+        and bool(str(item.get("pmcid") or "").strip())
     )
 
 
