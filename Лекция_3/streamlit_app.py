@@ -13,7 +13,14 @@ import translator
 from main import process_items
 from scraper import SOURCE_NAMES
 from summarizer import llm_unavailable_message, normalize_engine, resolve_llm
-from utils import load_config, resolve_date_range
+from utils import (
+    duplicate_doi_map,
+    filter_by_min_citations,
+    load_config,
+    normalize_doi,
+    resolve_date_range,
+    sort_items,
+)
 from validation import clean_topics
 
 _MCP_TOOLS = {
@@ -326,90 +333,131 @@ with tab_search:
                     "Подходящих записей в диапазоне не найдено. Попробуйте изменить тему, расширить даты или выключить пропуск просмотренных."
                 )
         else:
-            cards, table = st.tabs(["Карточки", "Таблица"])
-            with cards:
-                for index, item in enumerate(results, 1):
-                    source = SOURCE_NAMES.get(item.get("source"), item.get("source", "—"))
-                    with st.expander(
-                        f"{index}. {source} · {item.get('published') or 'дата неизвестна'}",
-                        expanded=index <= 3,
-                    ):
-                        # External titles/summaries are plain text, not executable Markdown/HTML.
-                        st.text(item.get("title") or "Без названия")
-                        st.link_button("Открыть запись источника", item["url"])
-                        st.caption("ID: " + item["identifier"])
-                        if item.get("authors"):
-                            st.text("Авторы: " + item["authors"])
-                        if item.get("abstract_origin") == "fulltext_xml":
-                            st.caption(
-                                "Аннотация догружена из открытого полного текста (экспериментальный режим)."
-                            )
-                        if item.get("provenance_notice"):
-                            st.info(item["provenance_notice"])
-                        method = item.get("summary_method", "none")
-                        st.markdown(
-                            "**Описание карточки (не резюме КР):**"
-                            if method == "metadata_only"
-                            else "**Резюме текста:**"
-                        )
-                        st.text(item.get("summary") or "Резюме отсутствует.")
-                        summary_text = (item.get("summary") or "").strip()
-                        if summary_text and method != "metadata_only":
-                            # Перевод — только по кнопке; текст уходит на внешний сервер (см. translator.py).
-                            target = "ru" if not translator.mostly_cyrillic(summary_text) else "en"
-                            direction = "на русский" if target == "ru" else "на английский"
-                            translation_key = f"tr:{item['identifier']}"
-                            translated = st.session_state.get(translation_key)
-                            if not translated and st.button(
-                                f"Перевести резюме {direction}", key=f"btn:{item['identifier']}"
-                            ):
-                                with st.spinner("Переводим резюме…"):
-                                    try:
-                                        translated = translator.translate_text(summary_text, target)
-                                    except Exception:
-                                        translated = None
-                                        st.warning(
-                                            "Не удалось перевести: сервис перевода недоступен. Оригинал показан выше."
-                                        )
-                                    else:
-                                        st.session_state[translation_key] = translated
-                            if translated and st.button("Скрыть перевод", key=f"hidetr:{item['identifier']}"):
-                                st.session_state[translation_key] = None
-                                translated = None
-                            if translated:
-                                st.info(translated)
-                                note = (
-                                    "Перевод выполнен внешним сервисом Google Translate (неофициальный endpoint); "
-                                    "текст резюме отправлен на серверы Google. Оригинал показан выше."
+            sort_label = st.selectbox(
+                "Сортировка",
+                ["По дате (новые сверху)", "По цитируемости"],
+                key="results_sort",
+            )
+            min_cited = st.slider(
+                "Минимум цитирований",
+                0,
+                100,
+                0,
+                help="Прячет записи с меньшим числом цитирований. Источники без этой метрики (Минздрав) не скрываются.",
+            )
+            order = "cited" if sort_label == "По цитируемости" else "date"
+            view_results = sort_items(filter_by_min_citations(results, min_cited), order)
+            hidden = len(results) - len(view_results)
+            if hidden:
+                st.caption(f"Скрыто фильтром цитируемости: {hidden}. Уменьшите слайдер, чтобы вернуть.")
+            if not view_results:
+                st.info("Все записи скрыты фильтром цитируемости. Уменьшите «Минимум цитирований».")
+            else:
+                cards, table = st.tabs(["Карточки", "Таблица"])
+                with cards:
+                    dup_map = duplicate_doi_map(view_results)
+                    for index, item in enumerate(view_results, 1):
+                        source = SOURCE_NAMES.get(item.get("source"), item.get("source", "—"))
+                        with st.expander(
+                            f"{index}. {source} · {item.get('published') or 'дата неизвестна'}",
+                            expanded=index <= 3,
+                        ):
+                            # External titles/summaries are plain text, not executable Markdown/HTML.
+                            st.text(item.get("title") or "Без названия")
+                            st.link_button("Открыть запись источника", item["url"])
+                            st.caption("ID: " + item["identifier"])
+                            if item.get("authors"):
+                                st.text("Авторы: " + item["authors"])
+                            meta_line = []
+                            types = item.get("article_types") or []
+                            if types:
+                                meta_line.append("Тип публикации: " + ", ".join(types))
+                            if item.get("cited_by_count") is not None:
+                                meta_line.append(f"Цитирований: {item['cited_by_count']}")
+                            if meta_line:
+                                st.caption(" · ".join(meta_line))
+                            if item.get("relevance_match"):
+                                st.caption(f"Релевантно по теме: «{item['relevance_match']}»")
+                            doi_key = normalize_doi(item.get("doi"))
+                            others = [i for i in dup_map.get(doi_key, []) if i != item.get("identifier")]
+                            if others:
+                                st.caption("Тот же DOI найден ещё: " + ", ".join(others))
+                            if item.get("abstract_origin") == "fulltext_xml":
+                                st.caption(
+                                    "Аннотация догружена из открытого полного текста (экспериментальный режим)."
                                 )
-                                if len(summary_text) > translator.MAX_INPUT_CHARS:
-                                    note += " Переведены первые 2000 символов."
-                                st.caption(note)
-                        st.caption("Метод: " + METHOD_LABELS.get(method, method))
-                        if item.get("summary_notice"):
-                            st.caption(item["summary_notice"])
-                        st.caption("Статус: " + item.get("status", ""))
-            with table:
-                frame = pd.DataFrame(results).rename(
-                    columns={
-                        "source": "Источник",
-                        "identifier": "ID",
-                        "title": "Название",
-                        "url": "Ссылка",
-                        "published": "Дата / год",
-                        "summary": "Резюме / описание",
-                        "summary_method": "Метод",
-                        "provenance": "Происхождение",
-                        "status": "Статус",
-                    }
-                )
-                frame["Источник"] = frame["Источник"].map(lambda sid: SOURCE_NAMES.get(sid, sid))
-                st.dataframe(
-                    frame,
-                    width="stretch",
-                    hide_index=True,
-                    column_config={"Ссылка": st.column_config.LinkColumn("Ссылка")},
-                )
+                            if item.get("provenance_notice"):
+                                st.info(item["provenance_notice"])
+                            method = item.get("summary_method", "none")
+                            st.markdown(
+                                "**Описание карточки (не резюме КР):**"
+                                if method == "metadata_only"
+                                else "**Резюме текста:**"
+                            )
+                            st.text(item.get("summary") or "Резюме отсутствует.")
+                            summary_text = (item.get("summary") or "").strip()
+                            if summary_text and method != "metadata_only":
+                                # Перевод — только по кнопке; текст уходит на внешний сервер (см. translator.py).
+                                target = "ru" if not translator.mostly_cyrillic(summary_text) else "en"
+                                direction = "на русский" if target == "ru" else "на английский"
+                                translation_key = f"tr:{item['identifier']}"
+                                translated = st.session_state.get(translation_key)
+                                if not translated and st.button(
+                                    f"Перевести резюме {direction}", key=f"btn:{item['identifier']}"
+                                ):
+                                    with st.spinner("Переводим резюме…"):
+                                        try:
+                                            translated = translator.translate_text(summary_text, target)
+                                        except Exception:
+                                            translated = None
+                                            st.warning(
+                                                "Не удалось перевести: сервис перевода недоступен. Оригинал показан выше."
+                                            )
+                                        else:
+                                            st.session_state[translation_key] = translated
+                                if translated and st.button("Скрыть перевод", key=f"hidetr:{item['identifier']}"):
+                                    st.session_state[translation_key] = None
+                                    translated = None
+                                if translated:
+                                    st.info(translated)
+                                    note = (
+                                        "Перевод выполнен внешним сервисом Google Translate (неофициальный endpoint); "
+                                        "текст резюме отправлен на серверы Google. Оригинал показан выше."
+                                    )
+                                    if len(summary_text) > translator.MAX_INPUT_CHARS:
+                                        note += " Переведены первые 2000 символов."
+                                    st.caption(note)
+                            st.caption("Метод: " + METHOD_LABELS.get(method, method))
+                            if item.get("summary_notice"):
+                                st.caption(item["summary_notice"])
+                            st.caption("Статус: " + item.get("status", ""))
+                with table:
+                    frame = pd.DataFrame(view_results).rename(
+                        columns={
+                            "source": "Источник",
+                            "identifier": "ID",
+                            "title": "Название",
+                            "url": "Ссылка",
+                            "published": "Дата / год",
+                            "summary": "Резюме / описание",
+                            "summary_method": "Метод",
+                            "provenance": "Происхождение",
+                            "status": "Статус",
+                            "cited_by_count": "Цитирования",
+                            "article_types": "Тип публикации",
+                        }
+                    )
+                    if "Тип публикации" in frame.columns:
+                        frame["Тип публикации"] = frame["Тип публикации"].map(
+                            lambda v: ", ".join(v) if isinstance(v, list) else ""
+                        )
+                    frame["Источник"] = frame["Источник"].map(lambda sid: SOURCE_NAMES.get(sid, sid))
+                    st.dataframe(
+                        frame,
+                        width="stretch",
+                        hide_index=True,
+                        column_config={"Ссылка": st.column_config.LinkColumn("Ссылка")},
+                    )
 
 with tab_providers:
     st.header("Провайдеры резюме")

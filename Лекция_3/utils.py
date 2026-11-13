@@ -143,6 +143,69 @@ def token_is_exact(token: str) -> bool:
     return bool(letters) and letters.isupper() and len(letters) <= 5
 
 
+_DOI_PREFIX_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.IGNORECASE)
+
+
+def normalize_doi(value) -> str:
+    """Нормализовать DOI: нижний регистр, без префикса URL/«doi:», без хвостовой пунктуации."""
+    text = str(value or "").strip().lower()
+    text = _DOI_PREFIX_RE.sub("", text)
+    return text.rstrip("./;,")
+
+
+def duplicate_doi_map(items) -> Dict[str, List[str]]:
+    """Карта «нормализованный DOI -> идентификаторы» только для DOI, встретившихся более одного раза."""
+    groups: Dict[str, List[str]] = {}
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        doi = normalize_doi(item.get("doi"))
+        identifier = str(item.get("identifier") or "")
+        if not doi or not identifier:
+            continue
+        ids = groups.setdefault(doi, [])
+        if identifier not in ids:
+            ids.append(identifier)
+    return {doi: ids for doi, ids in groups.items() if len(ids) > 1}
+
+
+def _cited_value(item: Dict) -> int:
+    try:
+        return int(item.get("cited_by_count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def sort_items(items, order: str = "date") -> List[Dict]:
+    """Стабильная сортировка выдачи: по дате (новые сверху) или по цитируемости."""
+    data = list(items or [])
+    if order == "cited":
+        return sorted(data, key=lambda i: (_cited_value(i), str(i.get("published") or "")), reverse=True)
+    return sorted(data, key=lambda i: str(i.get("published") or ""), reverse=True)
+
+
+def filter_by_min_citations(items, minimum) -> List[Dict]:
+    """Оставить записи не ниже порога цитируемости; источники без метрики (Минздрав) не скрываются."""
+    try:
+        floor = max(0, int(minimum))
+    except (TypeError, ValueError):
+        floor = 0
+    out: List[Dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        cited = item.get("cited_by_count")
+        if cited is None:
+            out.append(item)
+            continue
+        try:
+            if int(cited) >= floor:
+                out.append(item)
+        except (TypeError, ValueError):
+            out.append(item)
+    return out
+
+
 def extract_text_from_url(url: str) -> str:
     """Read only bounded HTML/text from a public address, without navigation."""
     try:

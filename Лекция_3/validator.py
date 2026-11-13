@@ -49,3 +49,13 @@ def validate_item(item: dict, topics: list[str]) -> bool:
     except Exception:
         logger.warning("Не удалось проверить текст одной записи.")
         return False
+
+
+def relevance_match(item: dict, topics: list[str]) -> str:
+    """Тема, по которой запись прошла проверку в title/abstract, либо '' (совпала только страница)."""
+    try:
+        text = f"{item.get('title') or ''}\n{item.get('abstract') or ''}"
+        return _find_topic(text, topics) or ""
+    except Exception:
+        return ""
+

@@ -14,7 +14,7 @@ Europe PMC — открытая биомедицинская база (EBI): Pub
 
 Возвращает единый формат записи, общий для всех источников:
     source, identifier, title, url, abstract, authors, published
-и добавляет doi, venue, cited_by_count, keywords, pmid, pmcid.
+и добавляет doi, venue, cited_by_count, keywords, pmid, pmcid, article_types.
 """
 
 import html
@@ -132,6 +132,23 @@ def _article_url(record: Dict) -> str:
     return f"https://doi.org/{quote(doi, safe='/')}" if doi else ""
 
 
+def _article_types(record: Dict) -> List[str]:
+    """Типы публикации из pubTypeList (core): «Review», «Research Article» и т. п."""
+    raw = record.get("pubTypeList")
+    if isinstance(raw, dict):
+        raw = raw.get("pubType")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    types: List[str] = []
+    for entry in raw:
+        text = _clean(entry)
+        if text and text not in types:
+            types.append(text)
+    return types[:6]
+
+
 def _to_item(record: Dict) -> Dict:
     """Привести ответ Europe PMC к общему формату записи трекера."""
     pmcid = _clean(record.get("pmcid"))
@@ -157,6 +174,7 @@ def _to_item(record: Dict) -> Dict:
         "keywords": _keywords(record),
         "pmid": pmid,
         "pmcid": pmcid,
+        "article_types": _article_types(record),
     }
 
 
