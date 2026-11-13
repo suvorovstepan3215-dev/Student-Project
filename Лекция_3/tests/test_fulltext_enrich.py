@@ -1,6 +1,7 @@
 """Экспериментальная догрузка аннотации (fulltext_enrich). Главный поиск не обязан её знать."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -101,3 +102,48 @@ def test_ui_has_experimental_checkbox_off_by_default():
     assert not app.exception
     checkbox = next(c for c in app.checkbox if c.key == "exp_fulltext_fallback")
     assert checkbox.value is False
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes, content_type: str = "application/xml"):
+        self._body = body
+        self.headers = {"Content-Type": content_type}
+        self.text = body.decode("utf-8", "replace")
+        self.content = body
+
+    def raise_for_status(self):
+        return None
+
+
+def test_fetch_abstract_uses_pmcid_fulltext_xml_url(monkeypatch):
+    seen = {}
+
+    def fake_get(url, **kwargs):
+        seen["url"] = url
+        return _FakeResponse(FULLTEXT_XML)
+
+    monkeypatch.setattr(fulltext_enrich, "requests", SimpleNamespace(get=fake_get))
+    abstract = fulltext_enrich.fetch_abstract_for_record(pmcid="PMC13753175", pmid="999")
+    assert seen["url"] == (
+        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC13753175/fullTextXML"
+    )
+    assert abstract == "Diabetes and glycaemic control: abstract from full text."
+
+
+def test_fetch_abstract_without_pmcid_does_not_request(monkeypatch):
+    def fail_get(*args, **kwargs):
+        pytest.fail("pmid-only запись не должна уходить в сеть")
+
+    monkeypatch.setattr(fulltext_enrich, "requests", SimpleNamespace(get=fail_get))
+    assert fulltext_enrich.fetch_abstract_for_record(pmid="33781993") == ""
+
+
+def test_enrich_skips_pmid_only_records(monkeypatch):
+    monkeypatch.setattr(
+        fulltext_enrich,
+        "fetch_abstract_for_record",
+        lambda **kwargs: pytest.fail("pmid-only запись не догружается"),
+    )
+    out, stats = fulltext_enrich.enrich_results([item("europepmc:7", abstract="", pmid="33781993")])
+    assert stats == {"attempted": 0, "enriched": 0, "failed": 0, "skipped_limit": 0}
+    assert out[0]["abstract"] == ""
