@@ -15,15 +15,6 @@ Europe PMC — открытая биомедицинская база (EBI): Pub
 Возвращает единый формат записи, общий для всех источников:
     source, identifier, title, url, abstract, authors, published
 и добавляет doi, venue, cited_by_count, keywords, pmid, pmcid.
-
-Экспериментальная функция (по умолчанию ВЫКЛЮЧЕНА): если у open-access
-записи пустая аннотация, её можно догрузить из открытого полного текста
-(fullTextXML, JATS). Включение: переменная окружения
-``EUROPEPMC_FULLTEXT_FALLBACK=1``, ключ ``europepmc.fulltext_abstract_fallback``
-в config.yaml или аргумент ``fulltext_fallback``. Явный аргумент важнее
-окружения, окружение важнее конфига. Догруженная аннотация помечается
-``abstract_origin="fulltext_xml"``. На один fetch() догружается не больше
-FULLTEXT_MAX_PER_FETCH аннотаций; сбой догрузки — не повод терять запись.
 """
 
 import html
@@ -31,7 +22,6 @@ import logging
 import os
 import re
 import time
-import xml.etree.ElementTree as ET
 from datetime import date
 from typing import Dict, List, Optional
 from urllib.parse import quote
@@ -51,13 +41,6 @@ EUROPEPMC_API_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 PAGE_SIZE_MAX = 1000
 
 USER_AGENT = "multi-agent-publication-tracker/1.0 (MAS course project)"
-
-# Экспериментальная догрузка аннотации из открытого полного текста (JATS XML).
-FULLTEXT_XML_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{source}/{record_id}/fullTextXML"
-FULLTEXT_MAX_BYTES = 5 * 1024 * 1024
-FULLTEXT_MAX_CHARS = 15000
-FULLTEXT_MAX_PER_FETCH = 10
-_DOCTYPE_RE = re.compile(r"<!DOCTYPE[^\[]*(\[[\s\S]*?\])[^>]*>|<!DOCTYPE[^>]*>", re.IGNORECASE | re.DOTALL)
 
 # Теги разметки в заголовках и аннотациях Europe PMC (<i>, <sub>, <sup>…).
 _TAG = re.compile(r"<[^>]+>")
@@ -189,80 +172,6 @@ def _client_params() -> Dict[str, str]:
     return {"email": email} if email else {}
 
 
-def _fulltext_enabled(explicit: Optional[bool]) -> bool:
-    """Эффективное значение экспериментального выключателя.
-
-    Явный аргумент (например, галочка в веб-интерфейсе) важнее переменной
-    окружения, та важнее config.yaml. По умолчанию функция выключена.
-    """
-    if explicit is not None:
-        return bool(explicit)
-    env = os.getenv("EUROPEPMC_FULLTEXT_FALLBACK", "").strip().lower()
-    if env:
-        return env in ("1", "true", "yes", "on")
-    cfg = load_config().get("europepmc") or {}
-    return bool(cfg.get("fulltext_abstract_fallback", False))
-
-
-def _is_open_access(record: Dict) -> bool:
-    return _clean(record.get("isOpenAccess")).upper() == "Y"
-
-
-def _abstract_from_xml(xml_text: str) -> str:
-    """Вырезать текст элемента <abstract> из JATS XML полного текста.
-
-    DOCTYPE вырезается до разбора (внутренние сущности не раскрываем);
-    внешние сущности ElementTree не обрабатывает. Теги внутри абстракта
-    убираются, текст схлопывается в одну строку.
-    """
-    if not xml_text:
-        return ""
-    cleaned = _DOCTYPE_RE.sub("", xml_text)[:FULLTEXT_MAX_BYTES]
-    try:
-        root = ET.fromstring(cleaned)
-    except ET.ParseError:
-        return ""
-    for node in root.iter():
-        tag = node.tag if isinstance(node.tag, str) else ""
-        if tag.rsplit("}", 1)[-1].lower() == "abstract":
-            joined = " ".join("".join(node.itertext()).split())
-            joined = _TAG.sub(" ", joined)
-            joined = html.unescape(joined)
-            joined = re.sub(r"\s+", " ", joined).strip()
-            return joined[:FULLTEXT_MAX_CHARS]
-    return ""
-
-
-def _fetch_fulltext_abstract(record: Dict) -> str:
-    """Догрузить аннотацию из fullTextXML открытого полного текста.
-
-    Сначала пробуем пару (source, id) самой записи, затем пару (PMC, pmcid).
-    Ошибки сети/HTTP всплывают исключением — вызов решает, сколько их терпеть.
-    Пустой результат = XML разобран, но аннотации в нём нет (это не ошибка).
-    """
-    source = _clean(record.get("source"))
-    record_id = _clean(record.get("id"))
-    pmcid = _clean(record.get("pmcid"))
-    candidates: List[str] = []
-    if source and record_id:
-        candidates.append(
-            FULLTEXT_XML_URL.format(source=quote(source, safe=""), record_id=quote(record_id, safe=""))
-        )
-    if pmcid and (source, record_id) != ("PMC", pmcid):
-        candidates.append(FULLTEXT_XML_URL.format(source="PMC", record_id=quote(pmcid, safe="")))
-    for url in candidates:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20, max_bytes=FULLTEXT_MAX_BYTES)
-        resp.raise_for_status()
-        content_type = (resp.headers or {}).get("Content-Type", "").lower()
-        if "html" in content_type:
-            continue
-        body = resp.text if isinstance(resp.text, str) else resp.content.decode("utf-8", "replace")
-        abstract = _abstract_from_xml(body)
-        if abstract:
-            return abstract
-    return ""
-
-
 def _error_message(resp: requests.Response) -> str:
     """Текст ошибки из ответа API, если он там есть."""
     try:
@@ -305,7 +214,6 @@ def fetch(
     rows: int = 20,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    fulltext_fallback: Optional[bool] = None,
 ) -> SearchResults:
     """Newest matches globally: sort_date:y is sent to the API, not just applied locally.
 
@@ -318,8 +226,6 @@ def fetch(
     query = build_query(topics, date_from, date_to) + " sort_date:y"
     params = {"query": query, "format": "json", "resultType": "core", "pageSize": rows}
     params.update(_client_params())
-    fulltext_on = _fulltext_enabled(fulltext_fallback)
-    fulltext_attempts = fulltext_failures = 0
     result = SearchResults()
     cursor, cursors, identifiers = "*", set(), set()
     for _ in range(5):
@@ -343,22 +249,6 @@ def fetch(
         for record in records:
             try:
                 item = _to_item(record)
-                if (
-                    fulltext_on
-                    and not item["abstract"]
-                    and _is_open_access(record)
-                    and fulltext_attempts < FULLTEXT_MAX_PER_FETCH
-                ):
-                    fulltext_attempts += 1
-                    try:
-                        abstract = _fetch_fulltext_abstract(record)
-                    except Exception as exc:
-                        fulltext_failures += 1
-                        logger.warning("fullTextXML не ответили (%s).", type(exc).__name__)
-                    else:
-                        if abstract:
-                            item["abstract"] = abstract
-                            item["abstract_origin"] = "fulltext_xml"
                 if not item["url"] or not item["published"] or item["identifier"] == SOURCE_ID:
                     raise ValueError("Incomplete record")
                 if item["identifier"] not in identifiers:
@@ -376,14 +266,6 @@ def fetch(
             result.warnings.append(
                 diagnostic(SOURCE_ID, "page_limit", "Europe PMC: достигнут предел обхода страниц.")
             )
-    if fulltext_on and fulltext_failures:
-        result.warnings.append(
-            diagnostic(
-                SOURCE_ID,
-                "fulltext_failed",
-                f"Не удалось догрузить аннотацию из открытого полного текста для {fulltext_failures} запис(ей).",
-            )
-        )
     result.sort(key=lambda item: item["published"], reverse=True)
     del result[rows:]
     return result
