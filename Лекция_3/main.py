@@ -33,7 +33,6 @@ def process_items(
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
     session_history: Optional[list[str]] = None,
-    europepmc_fulltext_fallback: Optional[bool] = None,
 ) -> SearchResults:
     """A result contains items AND request-local errors/warnings/source_statuses.
 
@@ -52,7 +51,6 @@ def process_items(
         not isinstance(skip_seen, bool)
         or not isinstance(save_history, bool)
         or (send is not None and not isinstance(send, bool))
-        or (europepmc_fulltext_fallback is not None and not isinstance(europepmc_fulltext_fallback, bool))
     ):
         raise ValueError("Флаги запуска должны быть логическими значениями.")
     if session_history is not None and (
@@ -74,7 +72,6 @@ def process_items(
         save_history=False,
         date_from=start,
         date_to=end,
-        europepmc_fulltext_fallback=europepmc_fulltext_fallback,
     )
     results = SearchResults(
         errors=getattr(fetched, "errors", []),

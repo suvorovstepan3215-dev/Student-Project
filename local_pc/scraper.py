@@ -39,23 +39,11 @@ def clean_sources(sources) -> list[str]:
     return list(dict.fromkeys(sources))
 
 
-def fetch_source(
-    source_id: str,
-    topics: list[str],
-    rows: int,
-    start: date,
-    end: date,
-    europepmc_fulltext_fallback: Optional[bool] = None,
-) -> SearchResults:
+def fetch_source(source_id: str, topics: list[str], rows: int, start: date, end: date) -> SearchResults:
     """A source outage is never indistinguishable from a successful empty search."""
     result = SearchResults(source_statuses={source_id: "ok"})
     try:
-        if source_id == "europepmc":
-            fetched = SOURCES[source_id].fetch(
-                topics, rows=rows, date_from=start, date_to=end, fulltext_fallback=europepmc_fulltext_fallback
-            )
-        else:
-            fetched = SOURCES[source_id].fetch(topics, rows=rows, date_from=start, date_to=end)
+        fetched = SOURCES[source_id].fetch(topics, rows=rows, date_from=start, date_to=end)
         result.errors.extend(getattr(fetched, "errors", []))
         result.warnings.extend(getattr(fetched, "warnings", []))
         if not isinstance(fetched, list):
@@ -114,7 +102,6 @@ def get_new_items(
     save_history: bool = False,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    europepmc_fulltext_fallback: Optional[bool] = None,
 ) -> SearchResults:
     """Search + relevance. The pipeline saves history only AFTER successful processing.
 
@@ -127,16 +114,12 @@ def get_new_items(
     bounded_int(rows, "rows", 1, 100)
     if not isinstance(skip_seen, bool) or not isinstance(save_history, bool):
         raise ValueError("Параметры истории должны быть логическими значениями.")
-    if europepmc_fulltext_fallback is not None and not isinstance(europepmc_fulltext_fallback, bool):
-        raise ValueError("Флаг europepmc_fulltext_fallback должен быть логическим или None.")
     start, end = resolve_date_range(date_from=date_from, date_to=date_to)
     history = set(get_history()) if skip_seen else set()
     result = SearchResults()
     seen = set()
     for sid in sources:
-        batch = fetch_source(
-            sid, topics, rows, start, end, europepmc_fulltext_fallback=europepmc_fulltext_fallback
-        )
+        batch = fetch_source(sid, topics, rows, start, end)
         result.errors.extend(batch.errors)
         result.warnings.extend(batch.warnings)
         result.source_statuses.update(batch.source_statuses)
