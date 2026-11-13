@@ -14,7 +14,7 @@ from results import SearchResults, diagnostic
 from security import UnsafeURL, normalize_url
 from utils import get_history, load_config, resolve_date_range, update_history
 from validation import bounded_int, clean_topics
-from validator import validate_item
+from validator import relevance_match, validate_item
 
 logger = logging.getLogger("archiv_tracker.scraper")
 SOURCES = {
@@ -129,7 +129,7 @@ def get_new_items(
                 continue
             try:
                 if validate_item(item, topics):
-                    result.append(item)
+                    result.append(dict(item, relevance_match=relevance_match(item, topics)))
                     seen.add(identifier)
             except Exception:
                 result.warnings.append(
