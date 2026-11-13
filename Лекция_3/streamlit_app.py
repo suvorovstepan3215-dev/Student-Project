@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+import fulltext_enrich
 import mcp_service
 import translator
 from main import process_items
@@ -173,6 +174,14 @@ with st.sidebar:
             "КР: API фильтруется по дате реестра; зеркало — только по году пересмотра. Для старых КР расширьте период."
         )
     rows = st.slider("Записей с каждого источника", 5, 100, 20, step=5)
+    fulltext_fallback = st.checkbox(
+        "Эксперимент: догрузить пустые аннотации Europe PMC из полного текста",
+        value=False,
+        key="exp_fulltext_fallback",
+        help="После обычного поиска (он не меняется): для записей Europe PMC с пометкой "
+        "«No abstract provided» <abstract> берётся из открытого JATS XML полного текста. "
+        "Не больше 10 догрузок за запуск; сбой никак не влияет на результаты поиска.",
+    )
     st.subheader("Резюме")
     engine = st.session_state["provider"]
     st.caption(PROVIDER_LABELS[engine] + ". Выбор — на вкладке «Провайдеры».")
@@ -228,13 +237,25 @@ with tab_search:
                     date_to=date_to,
                     send=False,
                 )
-                st.session_state["results"] = list(result)
+                items = list(result)
+                if fulltext_fallback:
+                    try:
+                        items, enrich_stats = fulltext_enrich.enrich_results(
+                            items, max_sentences=max_sentences, engine=engine
+                        )
+                        st.session_state["enrich_stats"] = enrich_stats
+                    except Exception:  # экспериментальный этап не имеет права ронять поиск
+                        st.session_state["enrich_stats"] = None
+                        st.warning("Экспериментальная догрузка не удалась — показаны обычные результаты.")
+                else:
+                    st.session_state["enrich_stats"] = None
+                st.session_state["results"] = items
                 st.session_state["diagnostics"] = result.diagnostics()
                 st.session_state["run_error"] = None
                 if save_history:
                     successful = [
                         item["identifier"]
-                        for item in result
+                        for item in items
                         if item.get("summary") and item.get("summary_method") != "none"
                     ]
                     st.session_state["seen_ids"] = list(
@@ -252,6 +273,13 @@ with tab_search:
                 st.session_state["diagnostics"] = {}
     if st.session_state.get("run_error"):
         st.error(st.session_state["run_error"])
+    enrich_stats = st.session_state.get("enrich_stats")
+    if enrich_stats is not None:
+        st.caption(
+            "Экспериментальный режим: догружено аннотаций из полного текста — "
+            f"{enrich_stats['enriched']} (попыток: {enrich_stats['attempted']}, "
+            f"ошибок: {enrich_stats['failed']}, не дошли лимит {enrich_stats['skipped_limit']})."
+        )
     diagnostics = st.session_state.get("diagnostics", {})
     for error, count in _grouped(diagnostics.get("errors", [])):
         suffix = f" (повторяется: {count})" if count > 1 else ""
@@ -312,6 +340,10 @@ with tab_search:
                         st.caption("ID: " + item["identifier"])
                         if item.get("authors"):
                             st.text("Авторы: " + item["authors"])
+                        if item.get("abstract_origin") == "fulltext_xml":
+                            st.caption(
+                                "Аннотация догружена из открытого полного текста (экспериментальный режим)."
+                            )
                         if item.get("provenance_notice"):
                             st.info(item["provenance_notice"])
                         method = item.get("summary_method", "none")
